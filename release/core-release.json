@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "version": "v1.19.32-udpfix-candidate",
+  "goVersion": "go1.26.8",
+  "upstreamCommit": "88dcbf7f1614a67c3b36b848ee3592dfa92ada36",
+  "baseArchiveUrl": "https://api.github.com/repos/MetaCubeX/mihomo/releases/assets/601415741?download=1",
+  "baseArchiveSha256": "f622cbe903ba1a11d30e9071d1c5373929c675b854856ff3e7f977255a25bb66",
+  "baseBinarySha256": "90ae4cb03be602aba9261751ebcf37697f6d2e073d747914b1484fd3f569fbb4",
+  "archiveSha256": "9d7c9b4085fb2f6edc4c6f7e1af2b92615354035ab7ff88fb092d5227896bdb8",
+  "binarySha256": "d52ec57980db07de447b27015df601539746fc762ba9b94636a67276d6b428bf",
+  "archiveBytes": 20860580,
+  "patchSha256": "36d18b2ac96db7bc3fdcf31854d41c73ddacd567f61aa37eb3823d799e0a5591",
+  "patchBytes": 662743,
+  "sourcePatchSha256": "511bf124a56a278e7d89081cdde8ec5c245640fc2e448c60543d6b666348840e",
+  "sourcePatchBytes": 23310
+}

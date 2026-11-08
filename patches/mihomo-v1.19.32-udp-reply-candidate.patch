@@ -1,0 +1,724 @@
+diff --git a/common/udpreply/matrix_linux_test.go b/common/udpreply/matrix_linux_test.go
+new file mode 100644
+index 0000000..1134a55
+--- /dev/null
++++ b/common/udpreply/matrix_linux_test.go
+@@ -0,0 +1,29 @@
++//go:build linux && udp_matrix
++
++package udpreply
++
++import (
++	"net/netip"
++	"os"
++	"testing"
++)
++
++func TestNonlocalPayloadSizeMatrix(t *testing.T) {
++	for _, tc := range []struct{ family, env, server string }{{"udp4", "UDP_REPLY_PEER4", "192.0.2.6:27051"}, {"udp6", "UDP_REPLY_PEER6", "[2001:db8:7::9]:27052"}} {
++		client, err := netip.ParseAddrPort(os.Getenv(tc.env))
++		if err != nil {
++			t.Fatal(err)
++		}
++		server := netip.MustParseAddrPort(tc.server)
++		for _, size := range []int{0, 1, 3, 64, 1200, 1400, 4096, 32768} {
++			payload := make([]byte, size)
++			for i := range payload {
++				payload[i] = byte((i*31 + int(tc.family[3]-'0')) % 251)
++			}
++			n, e := WritePacket(server, client, payload)
++			if e != nil || n != len(payload) {
++				t.Errorf("%s size%d n%d error%v", tc.family, size, n, e)
++			}
++		}
++	}
++}
+diff --git a/common/udpreply/packet.go b/common/udpreply/packet.go
+new file mode 100644
+index 0000000..900be65
+--- /dev/null
++++ b/common/udpreply/packet.go
+@@ -0,0 +1,48 @@
++package udpreply
++
++import (
++	"encoding/binary"
++	"errors"
++	"net/netip"
++)
++
++func buildPacket(server, client netip.AddrPort, payload []byte) ([]byte, error) {
++	src, dst := server.Addr().Unmap(), client.Addr().Unmap()
++	if !src.IsValid() || !dst.IsValid() || src.Is4() != dst.Is4() {
++		return nil, errors.New("UDP reply address families differ")
++	}
++	max := 65527
++	if src.Is4() {
++		max = 65507
++	}
++	if len(payload) > max {
++		return nil, errors.New("UDP reply exceeds IP packet limit")
++	}
++	packet := make([]byte, 8+len(payload))
++	binary.BigEndian.PutUint16(packet[0:2], server.Port())
++	binary.BigEndian.PutUint16(packet[2:4], client.Port())
++	binary.BigEndian.PutUint16(packet[4:6], uint16(len(packet)))
++	copy(packet[8:], payload)
++	sum := uint32(len(packet)) + 17
++	sum += wordSum(src.AsSlice()) + wordSum(dst.AsSlice()) + wordSum(packet)
++	for sum>>16 != 0 {
++		sum = (sum & 0xffff) + (sum >> 16)
++	}
++	checksum := ^uint16(sum)
++	if checksum == 0 {
++		checksum = 0xffff
++	}
++	binary.BigEndian.PutUint16(packet[6:8], checksum)
++	return packet, nil
++}
++func wordSum(data []byte) uint32 {
++	var sum uint32
++	for len(data) >= 2 {
++		sum += uint32(binary.BigEndian.Uint16(data))
++		data = data[2:]
++	}
++	if len(data) == 1 {
++		sum += uint32(data[0]) << 8
++	}
++	return sum
++}
+diff --git a/common/udpreply/packet_test.go b/common/udpreply/packet_test.go
+new file mode 100644
+index 0000000..1111d3b
+--- /dev/null
++++ b/common/udpreply/packet_test.go
+@@ -0,0 +1,50 @@
++package udpreply
++
++import (
++	"encoding/hex"
++	"net/netip"
++	"testing"
++)
++
++func TestUDPReplyPacketGoldenChecksums(t *testing.T) {
++	for _, test := range []struct{ server, client, want string }{
++		{"127.0.0.2:27051", "127.0.0.1:40000", "69ab9c4000107e646373322d74657374"},
++		{"[2001:db8::2]:27051", "[2001:db8::1]:40000", "69ab9c40001020f36373322d74657374"},
++	} {
++		p, err := buildPacket(netip.MustParseAddrPort(test.server), netip.MustParseAddrPort(test.client), []byte("cs2-test"))
++		if err != nil || hex.EncodeToString(p) != test.want {
++			t.Fatalf("%s packet=%x err=%v", test.server, p, err)
++		}
++	}
++}
++func TestUDPReplyRejectsMixedFamilyAndOversizedPayload(t *testing.T) {
++	a := netip.MustParseAddrPort("127.0.0.2:27051")
++	b := netip.MustParseAddrPort("[::1]:40000")
++	if _, err := buildPacket(a, b, nil); err == nil {
++		t.Fatal("mixed address families accepted")
++	}
++	for _, tc := range []struct {
++		s, c string
++		max  int
++	}{{"127.0.0.2:27051", "127.0.0.1:40000", 65507}, {"[::1]:27051", "[::1]:40000", 65527}} {
++		s, c := netip.MustParseAddrPort(tc.s), netip.MustParseAddrPort(tc.c)
++		if _, err := buildPacket(s, c, make([]byte, tc.max)); err != nil {
++			t.Fatal("legal payload rejected")
++		}
++		if _, err := buildPacket(s, c, make([]byte, tc.max+1)); err == nil {
++			t.Fatal("oversized payload accepted")
++		}
++	}
++}
++func TestOddLengthPayloadAndMappedIPv4(t *testing.T) {
++	for _, tc := range []struct{ s, c, want string }{
++		{"127.0.0.2:27051", "127.0.0.1:40000", "69ab9c40000b3786616263"},
++		{"[::ffff:127.0.0.2]:27051", "127.0.0.1:40000", "69ab9c40000b3786616263"},
++		{"[2001:db8::2]:27051", "[2001:db8::1]:40000", "69ab9c40000bda14616263"},
++	} {
++		got, err := buildPacket(netip.MustParseAddrPort(tc.s), netip.MustParseAddrPort(tc.c), []byte("abc"))
++		if err != nil || hex.EncodeToString(got) != tc.want {
++			t.Fatalf("odd/mapped checksum %x %v", got, err)
++		}
++	}
++}
+diff --git a/common/udpreply/peer_linux_test.go b/common/udpreply/peer_linux_test.go
+new file mode 100644
+index 0000000..9ed73db
+--- /dev/null
++++ b/common/udpreply/peer_linux_test.go
+@@ -0,0 +1,51 @@
++//go:build linux && udp_integration
++
++package udpreply
++
++import (
++	"errors"
++	"net"
++	"net/netip"
++	"os"
++	"syscall"
++	"testing"
++)
++
++func TestRawReplyNonlocalPeer(t *testing.T) {
++	for _, tc := range []struct{ network, env, server string }{{"udp4", "UDP_REPLY_PEER4", "192.0.2.6:27051"}, {"udp6", "UDP_REPLY_PEER6", "[2001:db8:7::9]:27052"}} {
++		t.Run(tc.network, func(t *testing.T) {
++			client, err := netip.ParseAddrPort(os.Getenv(tc.env))
++			if err != nil {
++				t.Fatalf("mandatory isolated peer missing: %s", tc.env)
++			}
++			server := netip.MustParseAddrPort(tc.server)
++			addresses, err := net.InterfaceAddrs()
++			if err != nil {
++				t.Fatal(err)
++			}
++			for _, address := range addresses {
++				prefix, e := netip.ParsePrefix(address.String())
++				if e == nil && prefix.Addr().Unmap() == server.Addr() {
++					t.Fatal("server source is local; nonlocal-source test invalid")
++				}
++			}
++			wildcard := net.IPv4zero
++			if tc.network == "udp6" {
++				wildcard = net.IPv6unspecified
++			}
++			blocker, err := net.ListenUDP(tc.network, &net.UDPAddr{IP: wildcard, Port: int(server.Port())})
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer blocker.Close()
++			if err = stockBind(server); !errors.Is(err, syscall.EADDRINUSE) {
++				t.Fatalf("forced conflict not established: %v", err)
++			}
++			payload := []byte("mihomo-nonlocal-" + tc.network + "-proof")
++			n, err := WritePacket(server, client, payload)
++			if err != nil || n != len(payload) {
++				t.Fatalf("raw nonlocal send n=%d err=%v", n, err)
++			}
++		})
++	}
++}
+diff --git a/common/udpreply/raw_linux.go b/common/udpreply/raw_linux.go
+new file mode 100644
+index 0000000..e427575
+--- /dev/null
++++ b/common/udpreply/raw_linux.go
+@@ -0,0 +1,89 @@
++//go:build linux
++
++package udpreply
++
++import (
++	"fmt"
++	"net"
++	"net/netip"
++	"strconv"
++	"syscall"
++
++	"golang.org/x/sys/unix"
++)
++
++// WritePacket sends one UDP reply without claiming a UDP port. A temporary raw
++// socket deliberately avoids port-reuse ambiguity with unrelated UDP sessions.
++// Call only for an EADDRINUSE failure in the normal transparent reply path.
++func WritePacket(server, client netip.AddrPort, payload []byte) (int, error) {
++	packet, err := buildPacket(server, client, payload)
++	if err != nil {
++		return 0, err
++	}
++	src, dst := server.Addr().Unmap(), client.Addr().Unmap()
++	family := syscall.AF_INET6
++	if src.Is4() {
++		family = syscall.AF_INET
++	}
++	fd, err := syscall.Socket(family, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC, syscall.IPPROTO_UDP)
++	if err != nil {
++		return 0, fmt.Errorf("UDP raw reply socket: %w", err)
++	}
++	defer syscall.Close(fd)
++	var local, remote syscall.Sockaddr
++	if src.Is4() {
++		err = syscall.SetsockoptInt(fd, syscall.SOL_IP, syscall.IP_TRANSPARENT, 1)
++		if err != nil {
++			return 0, fmt.Errorf("UDP raw reply transparency: %w", err)
++		}
++		remote = &syscall.SockaddrInet4{Addr: dst.As4()}
++		// Linux 5.4 raw_bind rejects nonlocal IPv4 addresses even with
++		// IP_TRANSPARENT. Supply the source per message instead; the kernel
++		// still constructs the IP header and handles fragmentation normally.
++		control := unix.PktInfo4(&unix.Inet4Pktinfo{Spec_dst: src.As4()})
++		n, e := syscall.SendmsgN(fd, packet, control, remote, 0)
++		if e != nil {
++			return 0, fmt.Errorf("UDP raw reply sendmsg: %w", e)
++		}
++		if n != len(packet) {
++			return 0, fmt.Errorf("UDP raw reply short send: %d/%d", n, len(packet))
++		}
++		return len(payload), nil
++	} else {
++		err = syscall.SetsockoptInt(fd, syscall.SOL_IPV6, 0x4b, 1) // IPV6_TRANSPARENT
++		sourceZone, e := zoneID(src.Zone())
++		if e != nil {
++			return 0, e
++		}
++		destZone, e := zoneID(dst.Zone())
++		if e != nil {
++			return 0, e
++		}
++		local = &syscall.SockaddrInet6{Addr: src.As16(), ZoneId: sourceZone}
++		remote = &syscall.SockaddrInet6{Addr: dst.As16(), ZoneId: destZone}
++	}
++	if err != nil {
++		return 0, fmt.Errorf("UDP raw reply transparency: %w", err)
++	}
++	if err = syscall.Bind(fd, local); err != nil {
++		return 0, fmt.Errorf("UDP raw reply source bind: %w", err)
++	}
++	if err = syscall.Sendto(fd, packet, 0, remote); err != nil {
++		return 0, fmt.Errorf("UDP raw reply send: %w", err)
++	}
++	return len(payload), nil
++}
++
++func zoneID(zone string) (uint32, error) {
++	if zone == "" {
++		return 0, nil
++	}
++	if value, err := strconv.ParseUint(zone, 10, 32); err == nil {
++		return uint32(value), nil
++	}
++	nic, err := net.InterfaceByName(zone)
++	if err != nil {
++		return 0, fmt.Errorf("UDP raw reply IPv6 zone: %w", err)
++	}
++	return uint32(nic.Index), nil
++}
+diff --git a/common/udpreply/raw_linux_test.go b/common/udpreply/raw_linux_test.go
+new file mode 100644
+index 0000000..c65e6c5
+--- /dev/null
++++ b/common/udpreply/raw_linux_test.go
+@@ -0,0 +1,115 @@
++//go:build linux && udp_integration
++
++package udpreply
++
++import (
++	"errors"
++	"fmt"
++	"net"
++	"net/netip"
++	"os"
++	"sync"
++	"syscall"
++	"testing"
++	"time"
++)
++
++// Run in an isolated Linux network namespace with CAP_NET_RAW. Never skip a
++// missing capability: a green result must mean real IP/UDP delivery occurred.
++func collisionFixture(t *testing.T, network string) (*net.UDPConn, *net.UDPConn, netip.AddrPort) {
++	t.Helper()
++	wildcard, source, client := "0.0.0.0", "127.0.0.2", "127.0.0.1"
++	if network == "udp6" {
++		wildcard, source, client = "::", "::1", "::1"
++	}
++	blocker, err := net.ListenUDP(network, &net.UDPAddr{IP: net.ParseIP(wildcard)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { blocker.Close() })
++	receiver, err := net.ListenUDP(network, &net.UDPAddr{IP: net.ParseIP(client)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { receiver.Close() })
++	return blocker, receiver, netip.AddrPortFrom(netip.MustParseAddr(source), uint16(blocker.LocalAddr().(*net.UDPAddr).Port))
++}
++func stockBind(server netip.AddrPort) error {
++	family := syscall.AF_INET6
++	if server.Addr().Is4() {
++		family = syscall.AF_INET
++	}
++	fd, err := syscall.Socket(family, syscall.SOCK_DGRAM, 0)
++	if err != nil {
++		return err
++	}
++	defer syscall.Close(fd)
++	if err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
++		return err
++	}
++	if err = syscall.SetsockoptInt(fd, syscall.SOL_IP, syscall.IP_TRANSPARENT, 1); err != nil {
++		return err
++	}
++	if server.Addr().Is4() {
++		return syscall.Bind(fd, &syscall.SockaddrInet4{Addr: server.Addr().As4(), Port: int(server.Port())})
++	}
++	return syscall.Bind(fd, &syscall.SockaddrInet6{Addr: server.Addr().As16(), Port: int(server.Port())})
++}
++func TestRealPortCollisionAndRawReplyDelivery(t *testing.T) {
++	for _, network := range []string{"udp4", "udp6"} {
++		t.Run(network, func(t *testing.T) {
++			_, receiver, server := collisionFixture(t, network)
++			if err := stockBind(server); !errors.Is(err, syscall.EADDRINUSE) {
++				t.Fatalf("stock collision not reproduced: %v", err)
++			}
++			client := receiver.LocalAddr().(*net.UDPAddr).AddrPort()
++			payload := []byte("UDP source tuple and payload must survive collision")
++			n, err := WritePacket(server, client, payload)
++			if err != nil || n != len(payload) {
++				t.Fatalf("raw write n=%d err=%v", n, err)
++			}
++			_ = receiver.SetReadDeadline(time.Now().Add(2 * time.Second))
++			buffer := make([]byte, 1024)
++			n, from, err := receiver.ReadFromUDPAddrPort(buffer)
++			if err != nil || from != server || string(buffer[:n]) != string(payload) {
++				t.Fatalf("wrong reply source=%s n=%d err=%v", from, n, err)
++			}
++		})
++	}
++}
++func TestRawReplyConcurrentClientsAndDescriptorLifetime(t *testing.T) {
++	_, _, server := collisionFixture(t, "udp4")
++	before, _ := os.ReadDir("/proc/self/fd")
++	var group sync.WaitGroup
++	for i := 0; i < 8; i++ {
++		group.Add(1)
++		go func(id int) {
++			defer group.Done()
++			c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
++			if err != nil {
++				t.Error(err)
++				return
++			}
++			defer c.Close()
++			for seq := 0; seq < 32; seq++ {
++				payload := []byte(fmt.Sprintf("client-%d/message-%d", id, seq))
++				if _, err = WritePacket(server, c.LocalAddr().(*net.UDPAddr).AddrPort(), payload); err != nil {
++					t.Error(err)
++					return
++				}
++				_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
++				buf := make([]byte, 256)
++				n, from, e := c.ReadFromUDPAddrPort(buf)
++				if e != nil || from != server || string(buf[:n]) != string(payload) {
++					t.Errorf("cross-delivered or missing UDP reply: %v", e)
++					return
++				}
++			}
++		}(i)
++	}
++	group.Wait()
++	after, _ := os.ReadDir("/proc/self/fd")
++	if len(after) > len(before)+2 {
++		t.Fatalf("descriptor growth before=%d after=%d", len(before), len(after))
++	}
++}
+diff --git a/common/udpreply/raw_other.go b/common/udpreply/raw_other.go
+new file mode 100644
+index 0000000..41c6ccb
+--- /dev/null
++++ b/common/udpreply/raw_other.go
+@@ -0,0 +1,12 @@
++//go:build !linux
++
++package udpreply
++
++import (
++	"errors"
++	"net/netip"
++)
++
++func WritePacket(server, client netip.AddrPort, payload []byte) (int, error) {
++	return 0, errors.New("raw UDP reply requires Linux")
++}
+diff --git a/listener/tproxy/packet.go b/listener/tproxy/packet.go
+index 0a0f5cd..b21b4bd 100644
+--- a/listener/tproxy/packet.go
++++ b/listener/tproxy/packet.go
+@@ -5,9 +5,11 @@ import (
+ 	"fmt"
+ 	"net"
+ 	"net/netip"
++	"syscall"
+ 
+ 	"github.com/metacubex/mihomo/adapter/inbound"
+ 	"github.com/metacubex/mihomo/common/pool"
++	"github.com/metacubex/mihomo/common/udpreply"
+ 	C "github.com/metacubex/mihomo/constant"
+ 	"github.com/metacubex/mihomo/log"
+ )
+@@ -29,6 +31,14 @@ func (c *packet) WriteBack(b []byte, addr net.Addr) (n int, err error) {
+ 	rAddr := addr.(*net.UDPAddr).AddrPort() // tunnel's handleUDPToLocal will ensure addr is *net.UDPAddr
+ 	tc, err := createOrGetLocalConn(rAddr, c.lAddr, c.tunnel, c.additions...)
+ 	if err != nil {
++		if errors.Is(err, syscall.EADDRINUSE) {
++			n, err = udpreply.WritePacket(rAddr, c.lAddr, b)
++			if err != nil {
++				log.Errorln("TProxy raw UDP reply failed: %s", err.Error())
++			}
++			return
++		}
++		log.Errorln("TProxy UDP reply socket failed: %s", err.Error())
+ 		return
+ 	}
+ 	n, err = tc.Write(b)
+@@ -53,40 +63,31 @@ func (c *packet) InAddr() net.Addr {
+ // for here, rAddr is the ip/port client want to access
+ // lAddr is the ip/port client opened
+ func createOrGetLocalConn(rAddr, lAddr netip.AddrPort, tunnel C.Tunnel, additions ...inbound.Addition) (*net.UDPConn, error) {
+-	remote := rAddr.String()
+-	local := lAddr.String()
+-	natTable := tunnel.NatTable()
+-	localConn := natTable.GetForLocalConn(local, remote)
+-	// localConn not exist
+-	if localConn == nil {
+-		cond, loaded := natTable.GetOrCreateLockForLocalConn(local, remote)
+-		if loaded {
+-			cond.L.Lock()
+-			cond.Wait()
+-			// we should get localConn here
+-			localConn = natTable.GetForLocalConn(local, remote)
+-			if localConn == nil {
+-				return nil, fmt.Errorf("localConn is nil, nat entry not exist")
+-			}
+-			cond.L.Unlock()
+-		} else {
+-			if cond == nil {
+-				return nil, fmt.Errorf("cond is nil, nat entry not exist")
+-			}
+-			defer func() {
+-				natTable.DeleteLockForLocalConn(local, remote)
+-				cond.Broadcast()
+-			}()
+-			conn, err := listenLocalConn(rAddr, lAddr, tunnel, additions...)
+-			if err != nil {
+-				log.Errorln("listenLocalConn failed with error: %s, packet loss (rAddr[%T]=%s lAddr[%T]=%s)", err.Error(), rAddr, remote, lAddr, local)
+-				return nil, err
+-			}
+-			natTable.AddForLocalConn(local, remote, conn)
+-			localConn = conn
+-		}
++	remote, local := rAddr.String(), lAddr.String()
++	table := tunnel.NatTable()
++	if conn := table.GetForLocalConn(local, remote); conn != nil {
++		return conn, nil
++	}
++	guard, _ := table.GetOrCreateLockForLocalConn(local, remote)
++	if guard == nil {
++		return nil, fmt.Errorf("UDP NAT entry no longer exists")
++	}
++	// Retain the per-peer guard for the NAT entry lifetime. Deleting it while
++	// another caller holds a reference could create two independent creators.
++	guard.L.Lock()
++	defer guard.L.Unlock()
++	if conn := table.GetForLocalConn(local, remote); conn != nil {
++		return conn, nil
++	}
++	conn, err := listenLocalConn(rAddr, lAddr, tunnel, additions...)
++	if err != nil {
++		return nil, err
++	}
++	if !table.AddForLocalConn(local, remote, conn) {
++		conn.Close()
++		return nil, fmt.Errorf("UDP NAT entry expired during reply socket creation")
+ 	}
+-	return localConn, nil
++	return conn, nil
+ }
+ 
+ // this function listen at rAddr
+diff --git a/listener/tproxy/packet_concurrency_test.go b/listener/tproxy/packet_concurrency_test.go
+new file mode 100644
+index 0000000..9f6b870
+--- /dev/null
++++ b/listener/tproxy/packet_concurrency_test.go
+@@ -0,0 +1,56 @@
++package tproxy
++
++import (
++	"net"
++	"net/netip"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/nat"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++type failureTunnel struct {
++	C.Tunnel
++	table *nat.Table
++}
++
++func (t failureTunnel) NatTable() C.NatTable { return t.table }
++func TestReplyCreationFailureDoesNotStrandConcurrentWaiters(t *testing.T) {
++	blocker, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer blocker.Close()
++	remote := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.2"), uint16(blocker.LocalAddr().(*net.UDPAddr).Port))
++	local := netip.MustParseAddrPort("127.0.0.1:45321")
++	tunnel := failureTunnel{table: nat.New()}
++	tunnel.table.GetOrCreate(local.String(), func() C.PacketSender { return nil })
++	var group sync.WaitGroup
++	start := make(chan struct{})
++	done := make(chan struct{})
++	for i := 0; i < 32; i++ {
++		group.Add(1)
++		go func() {
++			defer group.Done()
++			<-start
++			for j := 0; j < 100; j++ {
++				conn, e := createOrGetLocalConn(remote, local, tunnel)
++				if conn != nil {
++					conn.Close()
++				}
++				if e == nil {
++					t.Error("expected reply bind failure")
++				}
++			}
++		}()
++	}
++	close(start)
++	go func() { group.Wait(); close(done) }()
++	select {
++	case <-done:
++	case <-time.After(4 * time.Second):
++		t.Fatal("UDP reply creation failure stranded concurrent waiters")
++	}
++}
+diff --git a/listener/tproxy/packet_linux_test.go b/listener/tproxy/packet_linux_test.go
+new file mode 100644
+index 0000000..69a6995
+--- /dev/null
++++ b/listener/tproxy/packet_linux_test.go
+@@ -0,0 +1,57 @@
++//go:build linux && udp_integration
++
++package tproxy
++
++import (
++	"fmt"
++	"net"
++	"net/netip"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/nat"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestWriteBackDeliversWithAndWithoutPortCollision(t *testing.T) {
++	for _, network := range []string{"udp4", "udp6"} {
++		for _, collision := range []bool{false, true} {
++			t.Run(fmt.Sprintf("%s/collision-%v", network, collision), func(t *testing.T) {
++				clientIP, serverIP, wildcard := "127.0.0.1", "127.0.0.2", "0.0.0.0"
++				if network == "udp6" {
++					clientIP, serverIP, wildcard = "::1", "::1", "::"
++				}
++				client, err := net.ListenUDP(network, &net.UDPAddr{IP: net.ParseIP(clientIP)})
++				if err != nil {
++					t.Fatal(err)
++				}
++				defer client.Close()
++				held, err := net.ListenUDP(network, &net.UDPAddr{IP: net.ParseIP(wildcard)})
++				if err != nil {
++					t.Fatal(err)
++				}
++				defer held.Close()
++				source := netip.AddrPortFrom(netip.MustParseAddr(serverIP), uint16(held.LocalAddr().(*net.UDPAddr).Port))
++				if !collision {
++					held.Close()
++				}
++				target := client.LocalAddr().(*net.UDPAddr).AddrPort()
++				tunnel := failureTunnel{table: nat.New()}
++				tunnel.table.GetOrCreate(target.String(), func() C.PacketSender { return nil })
++				defer tunnel.table.RangeForLocalConn(target.String(), func(_ string, c *net.UDPConn) bool { c.Close(); return true })
++				p := packet{lAddr: target, tunnel: tunnel}
++				payload := []byte("mihomo WriteBack must preserve UDP data and source")
++				n, err := p.WriteBack(payload, net.UDPAddrFromAddrPort(source))
++				if err != nil || n != len(payload) {
++					t.Fatalf("WriteBack n=%d err=%v", n, err)
++				}
++				_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
++				buffer := make([]byte, 256)
++				n, from, err := client.ReadFromUDPAddrPort(buffer)
++				if err != nil || from != source || string(buffer[:n]) != string(payload) {
++					t.Fatalf("source=%s n=%d err=%v", from, n, err)
++				}
++			})
++		}
++	}
++}
+diff --git a/listener/tproxy/peer_linux_test.go b/listener/tproxy/peer_linux_test.go
+new file mode 100644
+index 0000000..5d0c0e2
+--- /dev/null
++++ b/listener/tproxy/peer_linux_test.go
+@@ -0,0 +1,43 @@
++//go:build linux && udp_integration
++
++package tproxy
++
++import (
++	"net"
++	"net/netip"
++	"os"
++	"testing"
++
++	"github.com/metacubex/mihomo/component/nat"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestWriteBackNonlocalPeer(t *testing.T) {
++	for _, tc := range []struct{ network, env, server string }{{"udp4", "UDP_REPLY_PEER4", "192.0.2.6:27051"}, {"udp6", "UDP_REPLY_PEER6", "[2001:db8:7::9]:27052"}} {
++		t.Run(tc.network, func(t *testing.T) {
++			client, err := netip.ParseAddrPort(os.Getenv(tc.env))
++			if err != nil {
++				t.Fatalf("mandatory isolated peer missing: %s", tc.env)
++			}
++			server := netip.MustParseAddrPort(tc.server)
++			wildcard := net.IPv4zero
++			if tc.network == "udp6" {
++				wildcard = net.IPv6unspecified
++			}
++			blocker, err := net.ListenUDP(tc.network, &net.UDPAddr{IP: wildcard, Port: int(server.Port())})
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer blocker.Close()
++			tunnel := failureTunnel{table: nat.New()}
++			tunnel.table.GetOrCreate(client.String(), func() C.PacketSender { return nil })
++			defer tunnel.table.RangeForLocalConn(client.String(), func(_ string, c *net.UDPConn) bool { c.Close(); return true })
++			p := packet{lAddr: client, tunnel: tunnel}
++			payload := []byte("mihomo-nonlocal-" + tc.network + "-proof")
++			n, err := p.WriteBack(payload, net.UDPAddrFromAddrPort(server))
++			if err != nil || n != len(payload) {
++				t.Fatalf("WriteBack nonlocal n=%d err=%v", n, err)
++			}
++		})
++	}
++}
+diff --git a/listener/tproxy/udp_linux.go b/listener/tproxy/udp_linux.go
+index c96d4cc..1745dd9 100644
+--- a/listener/tproxy/udp_linux.go
++++ b/listener/tproxy/udp_linux.go
+@@ -51,11 +51,11 @@ func dialUDP(network string, lAddr, rAddr netip.AddrPort) (uc *net.UDPConn, err
+ 	}
+ 
+ 	if err = syscall.Bind(fd, lSockAddr); err != nil {
+-		return nil, err
++		return nil, os.NewSyscallError("tproxy-udp-bind", err)
+ 	}
+ 
+ 	if err = syscall.Connect(fd, rSockAddr); err != nil {
+-		return nil, err
++		return nil, os.NewSyscallError("tproxy-udp-connect", err)
+ 	}
+ 
+ 	fdFile := os.NewFile(uintptr(fd), fmt.Sprintf("net-udp-dial-%s", rAddr.String()))

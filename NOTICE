@@ -1,0 +1,25 @@
+be3600pro-mihomo
+
+Project code: GNU General Public License version 3; see LICENSE.
+
+Mihomo modified core:
+  Upstream: https://github.com/MetaCubeX/mihomo
+  Exact source commit and binary checksums: release/core-release.json
+  Complete modifications: patches/mihomo-v1.19.32-udp-reply-candidate.patch
+  Upstream GPL version 3 text: android/assets/LICENSE-mihomo.txt
+  Recovery delta: release/core-update.bsdiff (pinned, derived binary patch)
+
+OpenWrt userspace xtables extensions:
+  Package: iptables-mod-tproxy 1.6.2-3, OpenWrt 18.06.9 archive
+  License: GPL-2.0 (as declared by the upstream package metadata)
+  Package/file provenance and checksums: release/xtables-release.json
+  Source packaging:
+    https://github.com/openwrt/openwrt/tree/v18.06.9/package/network/utils/iptables
+  Upstream iptables source:
+    https://git.netfilter.org/iptables/
+  These extensions are fetched and validated, not installed as replacement firmware.
+
+Go dependencies and versions are recorded in agent/go.mod and agent/go.sum.
+Python build dependencies are recorded in requirements.txt.
+Synthetic test credentials/certificates in tests are fixtures, not live credentials.
+No user configuration, subscription, router firmware or private key is distributed.

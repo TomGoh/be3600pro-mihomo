@@ -1,0 +1,18 @@
+{
+  "base": "https://archive.openwrt.org/releases/18.06.9/targets/ipq40xx/generic/packages/",
+  "Package": "iptables-mod-tproxy",
+  "Version": "1.6.2-3",
+  "Filename": "iptables-mod-tproxy_1.6.2-3_arm_cortex-a7_neon-vfpv4.ipk",
+  "SHA256sum": "7a5b6729dadd9bf7c989958c6bf75105a0fdfc99cada8e92c12669d3e0474f0b",
+  "License": "GPL-2.0",
+  "extensions": {
+    "TPROXY": {
+      "sha256": "369707aa50235bb4438b0635f1929d82e1882a3176d9253d999a58279eeb20f9",
+      "bytes": 4379
+    },
+    "socket": {
+      "sha256": "75cb37fb370baead67151883910c03bd67a5655a0ef97796d49a1f8f8c08f1f6",
+      "bytes": 4471
+    }
+  }
+}

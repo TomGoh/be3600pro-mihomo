@@ -1,0 +1,12 @@
+路由代理 0.2.0
+
+本应用包含修改版 Mihomo Linux ARMv7 核心，仅用于恢复您家庭路由器的代理服务。
+显示名称：v1.19.32 + UDP 修复测试版。此版本包含本地 UDP 回包修复，不是未经修改的上游发布包。
+Mihomo 版权所有归 MetaCubeX 项目及其贡献者所有，按 GNU General Public License v3 发布。
+完整许可证见 LICENSE-mihomo.txt。
+精确上游提交、核心版本与哈希、构建工具链见 CORE-SOURCE.txt 和 core-release.json。
+对应上游源码：https://github.com/MetaCubeX/mihomo/tree/v1.19.32
+相对于上游提交的完整本地源码修改随 APK 附带：mihomo-v1.19.32-udp-reply-candidate.patch。
+将该补丁应用到 CORE-SOURCE.txt 中标明的上游提交，可获得修改后的对应源码及测试。
+您可以按许可证约定获取、修改及重新分发该核心和修改源码。
+此应用不包含您的配对文件、订阅地址或访问凭据。
