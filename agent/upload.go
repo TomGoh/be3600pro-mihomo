@@ -46,7 +46,7 @@ func (s *Server) uploadCore(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "内核包校验失败，现有内核未改变")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 50*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 100*time.Second)
 	defer cancel()
 	unlock, err := lockFile(ctx, filepath.Join(s.options.RunDir, "core-install.lock"))
 	if err != nil {

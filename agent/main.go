@@ -97,7 +97,21 @@ func main() {
 	restore := flag.Bool("restore-selections", false, "restore persisted selector state after core start")
 	patchCore := flag.Bool("apply-core-patch", false, "verify official base and restore pinned core in RAM")
 	relays := flag.Bool("write-relay-bypass", false, "resolve configured upstream address/port pairs for LAN proxy coexistence")
+	checkRouting := flag.Bool("check-routing-ready", false, "verify host-prepared rule provider readiness")
 	flag.Parse()
+	if *checkRouting {
+		cfg, _, err := (&Store{Root: *root}).Snapshot()
+		if err != nil {
+			log.Fatal("routing configuration unavailable")
+		}
+		secret, _ := cfg["secret"].(string)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if _, err = CheckRoutingReady(ctx, *root, &CoreClient{BaseURL: "http://127.0.0.1:9090", Token: secret}); err != nil {
+			log.Fatal("routing policy not initialized")
+		}
+		return
+	}
 	if *relays {
 		if err := WriteRelayBypass(context.Background(), *root, *runDir, nil); err != nil {
 			log.Fatal("upstream relay planning failed")

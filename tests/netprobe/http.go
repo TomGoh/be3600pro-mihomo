@@ -91,7 +91,8 @@ func RunHTTP(parent context.Context, o HTTPOptions, emit func(HTTPResult)) error
 		return dnsDialer.DialContext(ctx, network, address)
 	}}
 	dialer := net.Dialer{Timeout: 6 * time.Second, Control: control, Resolver: resolver, KeepAlive: 15 * time.Second}
-	ctx, cancel := context.WithTimeout(parent, o.Duration)
+	durationCause := errors.New("HTTP measurement duration elapsed")
+	ctx, cancel := context.WithTimeoutCause(parent, o.Duration, durationCause)
 	defer cancel()
 	budget := &byteBudget{remaining: o.MaxBytes}
 	var failed, observed atomic.Bool
@@ -120,9 +121,14 @@ func RunHTTP(parent context.Context, o HTTPOptions, emit func(HTTPResult)) error
 				started := time.Now()
 				r := HTTPResult{Event: "request", Worker: worker}
 				var traceMu sync.Mutex
-				var reused bool
+				var reused, receivedFirstByte bool
 				var first float64
-				trace := &httptrace.ClientTrace{GotConn: func(i httptrace.GotConnInfo) { traceMu.Lock(); reused = i.Reused; traceMu.Unlock() }, GotFirstResponseByte: func() { traceMu.Lock(); first = float64(time.Since(started).Microseconds()) / 1000; traceMu.Unlock() }}
+				trace := &httptrace.ClientTrace{GotConn: func(i httptrace.GotConnInfo) { traceMu.Lock(); reused = i.Reused; traceMu.Unlock() }, GotFirstResponseByte: func() {
+					traceMu.Lock()
+					receivedFirstByte = true
+					first = float64(time.Since(started).Microseconds()) / 1000
+					traceMu.Unlock()
+				}}
 				requestCtx := ctx
 				stop := func() {}
 				if !o.Stream {
@@ -182,6 +188,10 @@ func RunHTTP(parent context.Context, o HTTPOptions, emit func(HTTPResult)) error
 					}
 					_ = response.Body.Close()
 				}
+				// Check the request's own cause before stop() cancels it. A
+				// request timeout must remain a failure even if the measurement
+				// window also expires before the result is emitted.
+				durationStop := (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, durationCause)) && context.Cause(requestCtx) == durationCause && parent.Err() == nil
 				stop()
 				r.Seconds = time.Since(started).Seconds()
 				r.UnixTime = float64(time.Now().UnixMilli()) / 1000
@@ -189,12 +199,16 @@ func RunHTTP(parent context.Context, o HTTPOptions, emit func(HTTPResult)) error
 				traceMu.Lock()
 				r.Reused = reused
 				r.TTFBMilliseconds = first
+				hasResponseByte := receivedFirstByte
 				traceMu.Unlock()
 				allowed := r.Status == 200 || r.Status == 204 || r.Status == 206
 				if err != nil {
 					r.Error = err.Error()
-					if errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil && allowed && r.Bytes > 0 {
+					if durationStop && allowed && r.Bytes > 0 {
 						r.StopReason = "duration"
+						// Keep the existing measured-duration wire format;
+						// transports may return the cancellation cause itself.
+						r.Error = context.DeadlineExceeded.Error()
 					}
 				}
 				if !allowed {
@@ -203,12 +217,23 @@ func RunHTTP(parent context.Context, o HTTPOptions, emit func(HTTPResult)) error
 				r.OK = err == nil && allowed && r.StopReason == ""
 				planned := allowed && r.Bytes > 0 && (r.StopReason == "duration" || r.StopReason == "budget")
 				idleBudget := allowed && err == nil && r.Bytes == 0 && r.StopReason == "budget"
-				if idleBudget {
+				// client.Do returns the measurement cause for pre-header
+				// cancellation. Require that identity as well, so an independent
+				// transport timeout cannot be discarded at the window boundary.
+				idleDuration := durationStop && errors.Is(err, durationCause) && r.Status == 0 && r.Bytes == 0 && !hasResponseByte
+				if idleDuration {
+					// The window ended before any response evidence existed.
+					// Preserve worker coverage without inventing a sample.
+					r.StopReason = "duration"
+					r.Error = ""
+					r.SHA256 = ""
+				}
+				if idleBudget || idleDuration {
 					r.Event = "worker-stop"
 				}
 				if r.OK || planned {
 					observed.Store(true)
-				} else if !idleBudget {
+				} else if !idleBudget && !idleDuration {
 					failed.Store(true)
 				}
 				output(r)

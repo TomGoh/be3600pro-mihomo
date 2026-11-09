@@ -244,5 +244,10 @@ func (s *Server) diagnosticHealth() map[string]any {
 			interception[key] = value
 		}
 	}
-	return map[string]any{"checkedAt": v.CheckedAt, "networkCheckedAt": v.NetworkCheckedAt, "interception": interception, "dns": allowed(v.DNS), "directHttp": allowed(v.DirectHTTP), "proxyHttp": allowed(v.ProxyHTTP), "udp": allowed(v.UDP), "proxyUdp4": allowed(v.ProxyUDP4), "proxyUdp6": allowed(v.ProxyUDP6)}
+	return map[string]any{"checkedAt": v.CheckedAt, "networkCheckedAt": v.NetworkCheckedAt, "interception": interception, "dns": allowed(v.DNS), "directHttp": allowed(v.DirectHTTP), "proxyHttp": allowed(v.ProxyHTTP), "udp": allowed(v.UDP), "routing": func() string {
+		if v.Routing == "ok" || v.Routing == "loading" {
+			return v.Routing
+		}
+		return "unknown"
+	}(), "proxyUdp4": allowed(v.ProxyUDP4), "proxyUdp6": allowed(v.ProxyUDP6)}
 }

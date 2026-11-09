@@ -28,7 +28,7 @@ def payload(prepared):
     release=json.loads((ROOT/'release/core-release.json').read_text())
     plugins=json.loads((ROOT/'release/xtables-release.json').read_text())
     files={name:(ROOT/'scripts'/name).read_bytes() for name in SCRIPTS}
-    for name in ('config.json','core-curl.conf','initial-rules.tgz'):
+    for name in ('config.json','core-curl.conf','initial-rules.tgz','routing-readiness.json'):
         files[name]=(prepared/name).read_bytes()
     config=json.loads(files['config.json'])
     if config.get('external-controller')!='127.0.0.1:9090' or config.get('mixed-port')!=7890:

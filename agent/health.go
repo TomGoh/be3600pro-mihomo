@@ -16,6 +16,7 @@ import (
 )
 
 type healthSnapshot struct {
+	Routing          string         `json:"routing"`
 	ProxyUDP4        string         `json:"proxyUdp4"`
 	ProxyUDP6        string         `json:"proxyUdp6"`
 	CheckedAt        int64          `json:"checkedAt"`
@@ -75,6 +76,14 @@ func (s *Server) checkHealth(network bool) {
 	}
 	if err != nil && interception["state"] == "checked" {
 		interception["complete"] = false
+	}
+	verified, readyErr := CheckRoutingReady(ctx, s.options.Root, s.options.Core)
+	v.Routing = "unknown"
+	if verified {
+		v.Routing = "ok"
+		if readyErr != nil {
+			v.Routing = "loading"
+		}
 	}
 	v.Interception = interception
 	v.CheckedAt = time.Now().Unix()

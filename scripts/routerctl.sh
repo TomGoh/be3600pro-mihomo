@@ -60,7 +60,9 @@ desired() {
 }
 
 core_ready() {
-    curl -f -K "$DATA/core-curl.conf" --max-time 2 http://127.0.0.1:9090/version >/dev/null 2>&1
+    curl -f -K "$DATA/core-curl.conf" --max-time 2 http://127.0.0.1:9090/version >/dev/null 2>&1 || return 1
+    [ -x "$RUN/router-agent" ] || return 1
+    "$RUN/router-agent" -root "$DATA" -run "$RUN" -check-routing-ready >/dev/null 2>&1
 }
 
 self_test() {
@@ -258,7 +260,7 @@ case "${1:-status}" in
         /tmp/mihomo -t -d "$RUN" -f "$DATA/config.json" > "$RUN/validate.log" 2>&1
         sh /etc/rc.common "$DATA/core.init" start
         count=0
-        until core_ready; do count=$((count+1)); [ "$count" -lt 25 ] || exit 1; sleep 1; done
+        until core_ready; do count=$((count+1)); [ "$count" -lt 90 ] || exit 1; sleep 1; done
         if [ -x "$RUN/router-agent" ]; then "$RUN/router-agent" -restore-selections; fi
         ;;
     core-stop) lifecycle_lock; disable_runtime; sh /etc/rc.common "$DATA/core.init" stop ;;

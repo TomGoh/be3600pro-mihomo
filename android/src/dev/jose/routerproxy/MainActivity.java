@@ -157,7 +157,7 @@ public final class MainActivity extends Activity {
  private void healthCard(){
   JSONObject health=status.optJSONObject("health");if(health==null)return;JSONObject snap=health.optJSONObject("snapshot");if(snap==null)return;JSONObject interception=snap.optJSONObject("interception");
   String local=health.optBoolean("stale",true)?"检查结果尚未就绪或已过期":interception!=null&&interception.optBoolean("expectedEnabled")?"IPv4 接管 "+(interception.optBoolean("ipv4")?"正常":"异常")+" · IPv6 接管 "+(interception.optBoolean("ipv6")?"正常":"异常"):"当前未启用接管";
-  card("分层健康状态",local+"\nDNS："+probeLabel(snap.optString("dns"))+" · 直连 HTTP："+probeLabel(snap.optString("directHttp"))+"\n代理 HTTP："+probeLabel(snap.optString("proxyHttp"))+"\n混合端口 UDP4："+probeLabel(snap.optString("proxyUdp4"))+" · UDP6："+probeLabel(snap.optString("proxyUdp6"))+"\n公网探测仅作参考，不能代表所有站点和游戏 UDP。"+(health.optBoolean("networkStale",true)?"\n网络探测结果尚未就绪或已过期":""));
+  card("分层健康状态",local+"\n路由规则："+(snap.optString("routing").equals("ok")?"就绪":snap.optString("routing").equals("loading")?"载入中，暂不启用接管":"未验证")+"\nDNS："+probeLabel(snap.optString("dns"))+" · 直连 HTTP："+probeLabel(snap.optString("directHttp"))+"\n代理 HTTP："+probeLabel(snap.optString("proxyHttp"))+"\n混合端口 UDP4："+probeLabel(snap.optString("proxyUdp4"))+" · UDP6："+probeLabel(snap.optString("proxyUdp6"))+"\n公网探测仅作参考，不能代表所有站点和游戏 UDP。"+(health.optBoolean("networkStale",true)?"\n网络探测结果尚未就绪或已过期":""));
  }
  private String probeLabel(String state){return state.equals("ok")?"通过":state.equals("failed")?"未通过":"未检测";}
  private void reliabilityCard(){
