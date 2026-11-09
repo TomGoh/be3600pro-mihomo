@@ -8,7 +8,7 @@ BT="${ANDROID_BUILD_TOOLS:-$SDK/build-tools/36.0.0}"
 JAR="$SDK/platforms/android-35/android.jar"
 OUT="$ROOT/build/android"
 STAGE="$OUT/stage"
-APK="$OUT/router-proxy-0.2.1.apk"
+APK="$OUT/router-proxy-0.3.0.apk"
 KEYSTORE="${ANDROID_KEYSTORE:-$ROOT/private/android-signing.jks}"
 PASSFILE="${ANDROID_SIGNING_PASSFILE:-$ROOT/private/android-signing.pass}"
 CORE="${MIHOMO_CORE_GZIP:-$ROOT/build/release/mihomo-router-armv7.gz}"
@@ -23,10 +23,11 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"/{classes,dex,assets,compiled,test-classes,generated}
 cp "$ROOT"/android/assets/* "$STAGE/assets/"
 python3 "$ROOT/android/core_release.py" generate "$RELEASE" "$CORE" "$PATCH" "$STAGE/assets" "$STAGE/generated"
-"$JAVA_HOME/bin/javac" --release 11 -encoding UTF-8 -d "$STAGE/test-classes" "$ROOT/android/src/dev/jose/routerproxy/SecurityRules.java" "$ROOT/android/tests/SecurityRulesTest.java" "$ROOT/android/src/dev/jose/routerproxy/PendingImport.java" "$ROOT/android/tests/PendingImportTest.java" "$ROOT/android/src/dev/jose/routerproxy/DeviceProtection.java" "$ROOT/android/tests/DeviceProtectionTest.java"
+"$JAVA_HOME/bin/javac" --release 11 -encoding UTF-8 -d "$STAGE/test-classes" "$ROOT/android/src/dev/jose/routerproxy/SecurityRules.java" "$ROOT/android/tests/SecurityRulesTest.java" "$ROOT/android/src/dev/jose/routerproxy/PendingImport.java" "$ROOT/android/tests/PendingImportTest.java" "$ROOT/android/src/dev/jose/routerproxy/DeviceProtection.java" "$ROOT/android/tests/DeviceProtectionTest.java" "$ROOT/android/src/dev/jose/routerproxy/TaskEpoch.java" "$ROOT/android/tests/TaskEpochTest.java"
 "$JAVA_HOME/bin/java" -cp "$STAGE/test-classes" dev.jose.routerproxy.SecurityRulesTest "$ROOT/android/tests/fixtures"
 "$JAVA_HOME/bin/java" -cp "$STAGE/test-classes" dev.jose.routerproxy.PendingImportTest
 "$JAVA_HOME/bin/java" -cp "$STAGE/test-classes" dev.jose.routerproxy.DeviceProtectionTest
+"$JAVA_HOME/bin/java" -cp "$STAGE/test-classes" dev.jose.routerproxy.TaskEpochTest
 "$BT/aapt2" compile --dir "$ROOT/android/res" -o "$STAGE/compiled/"
 "$BT/aapt2" link -o "$STAGE/resources.apk" -I "$JAR" --manifest "$ROOT/android/AndroidManifest.xml" -A "$STAGE/assets" "$STAGE"/compiled/*.flat
 find "$ROOT/android/src" "$STAGE/generated" -name '*.java' -print | LC_ALL=C sort > "$STAGE/sources.list"

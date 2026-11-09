@@ -8,6 +8,6 @@ cd "$ROOT/agent"
 "$GO" fmt ./...
 "$GO" test ./...
 CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 "$GO" build -trimpath -ldflags='-s -w -buildid=' -o "$ROOT/build/agent/router-agent" .
-gzip -9 -c "$ROOT/build/agent/router-agent" > "$ROOT/build/agent/router-agent.gz"
+gzip -n -9 -c "$ROOT/build/agent/router-agent" > "$ROOT/build/agent/router-agent.gz"
 shasum -a 256 "$ROOT/build/agent/router-agent" "$ROOT/build/agent/router-agent.gz"
 wc -c "$ROOT/build/agent/router-agent" "$ROOT/build/agent/router-agent.gz"

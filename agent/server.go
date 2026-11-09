@@ -18,13 +18,21 @@ import (
 )
 
 type Server struct {
-	options   Options
-	store     *Store
-	handler   http.Handler
-	mutation  sync.Mutex
-	busy      atomic.Bool
-	errorMu   sync.RWMutex
-	lastError string
+	previews      previewStore
+	failoverState map[string]*failoverRuntime
+	jobs          jobStore
+	health        healthState
+	intentMu      sync.Mutex
+	generation    uint64
+	activeCancel  context.CancelFunc
+	emergencyMu   sync.Mutex
+	options       Options
+	store         *Store
+	handler       http.Handler
+	mutation      sync.Mutex
+	busy          atomic.Bool
+	errorMu       sync.RWMutex
+	lastError     string
 }
 
 func NewServer(options Options) (*Server, error) {
@@ -39,6 +47,9 @@ func NewServer(options Options) (*Server, error) {
 	if recovered {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		err := options.Service.StopCore(ctx)
+		if err == nil {
+			err = options.Service.SetEnabled(ctx, false)
+		}
 		cancel()
 		if err != nil {
 			return nil, errors.New("interrupted transaction requires stopping old runtime")
@@ -59,12 +70,25 @@ func NewServer(options Options) (*Server, error) {
 		}
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/jobs", s.submitJob)
+	mux.HandleFunc("GET /api/jobs/by-key/{key}", s.getJobByKey)
+	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
+	mux.HandleFunc("GET /api/diagnostics", s.diagnostics)
+	mux.HandleFunc("GET /api/backup", s.backupStatus)
+	mux.HandleFunc("POST /api/backup", s.mutate(s.createBackup))
+	mux.HandleFunc("POST /api/backup/restore", s.mutate(s.restoreBackup))
 	mux.HandleFunc("GET /api/status", s.status)
-	mux.HandleFunc("POST /api/enabled", s.mutate(s.enabled))
+	mux.HandleFunc("POST /api/enabled", s.enabledDispatch)
+	mux.HandleFunc("POST /api/emergency-stop", s.emergencyStop)
+	mux.HandleFunc("POST /api/bootstrap-retry", s.mutate(s.bootstrapRetry))
+	mux.HandleFunc("GET /api/failover", s.getFailover)
+	mux.HandleFunc("PUT /api/failover", s.mutate(s.putFailover))
 	mux.HandleFunc("GET /api/mode", s.getMode)
 	mux.HandleFunc("PUT /api/mode", s.mutate(s.setMode))
 	mux.HandleFunc("GET /api/groups", s.groups)
 	mux.HandleFunc("PUT /api/groups/{group}", s.mutate(s.selectNode))
+	mux.HandleFunc("POST /api/imported/preview", s.mutate(s.previewImported))
+	mux.HandleFunc("POST /api/imported/apply", s.mutate(s.applyImported))
 	mux.HandleFunc("GET /api/subscriptions", s.listSubscriptions)
 	mux.HandleFunc("POST /api/subscriptions", s.mutate(s.addSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/update", s.mutate(s.updateSubscription))
@@ -85,16 +109,55 @@ func NewServer(options Options) (*Server, error) {
 	return s, nil
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
+type arrivalIntentKey struct{}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.intentMu.Lock()
+	intent := operationIntent{s.generation, readIntentEpoch(s.options.Root)}
+	s.intentMu.Unlock()
+	w.Header().Set("X-Intent-Epoch", intent.epoch)
+	s.handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), arrivalIntentKey{}, intent)))
+}
+
 func (s *Server) mutate(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		s.intentMu.Lock()
+		generation := s.generation
+		epoch := readIntentEpoch(s.options.Root)
+		if arrival, ok := r.Context().Value(arrivalIntentKey{}).(operationIntent); ok {
+			generation = arrival.generation
+			epoch = arrival.epoch
+		}
+		if queued, ok := r.Context().Value(queuedIntentKey{}).(operationIntent); ok {
+			generation = queued.generation
+			epoch = queued.epoch
+		}
+		s.intentMu.Unlock()
+		if !requestEpochMatches(r, epoch) {
+			w.Header().Set("X-Operation-Cancelled", "true")
+			problem(w, 409, "操作意图已过期，请刷新状态后重试")
+			return
+		}
 		s.mutation.Lock()
 		defer s.mutation.Unlock()
+		s.intentMu.Lock()
+		if generation != s.generation || epoch != readIntentEpoch(s.options.Root) || r.Context().Err() != nil {
+			s.intentMu.Unlock()
+			w.Header().Set("X-Operation-Cancelled", "true")
+			problem(w, 409, "操作已被急停取消，请重新操作")
+			return
+		}
+		ctx, cancel := context.WithCancel(r.Context())
+		ctx = context.WithValue(ctx, operationKey{}, operationIntent{generation, epoch})
+		s.activeCancel = cancel
+		s.intentMu.Unlock()
+		defer func() { cancel(); s.intentMu.Lock(); s.activeCancel = nil; s.intentMu.Unlock() }()
 		s.busy.Store(true)
 		defer s.busy.Store(false)
-		handler(w, r)
+		handler(w, r.WithContext(ctx))
 	}
 }
+
 func reply(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -153,7 +216,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	reply(w, 200, map[string]any{"coreRunning": running, "enabled": s.options.Service.Enabled(), "mode": mode, "version": versionData["version"], "busy": s.busy.Load(), "scope": scope, "error": last, "memoryAvailableKiB": memAvailable, "flashFreeBytes": free, "memoryCore": true})
+	reply(w, 200, map[string]any{"coreRunning": running, "enabled": s.options.Service.Enabled(), "mode": mode, "version": versionData["version"], "busy": s.busy.Load(), "scope": scope, "error": last, "memoryAvailableKiB": memAvailable, "flashFreeBytes": free, "memoryCore": true, "health": s.healthView(), "bootstrapStage": readPublicStage(s.options.RunDir)})
 }
 
 func (s *Server) enabled(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +229,7 @@ func (s *Server) enabled(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
 	defer cancel()
-	if err := s.options.Service.SetEnabled(ctx, *input.Enabled); err != nil {
+	if err := s.setEnabled(ctx, *input.Enabled); err != nil {
 		s.recordError("代理开关操作失败，请检查核心和节点状态")
 		problem(w, 503, "代理开关操作失败，请检查核心和节点状态")
 		return
@@ -205,7 +268,7 @@ func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
 		_, e = s.options.Core.Request(ctx, "PATCH", "/configs", map[string]any{"mode": current["mode"]})
 		return e
 	}
-	if err = s.store.Commit(r.Context(), cfg, state, s.options.Validate, reload); err != nil {
+	if err = s.commitConfig(r.Context(), cfg, state, s.options.Validate, reload); err != nil {
 		s.commitFailure(w, err)
 		return
 	}
@@ -292,6 +355,10 @@ func (s *Server) selectNode(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "节点不在当前策略组候选列表中")
 		return
 	}
+	if err = s.disableManualFailover(group); err != nil {
+		problem(w, 500, "无法停用自动切换，节点未改变")
+		return
+	}
 	if _, err = s.options.Core.Request(r.Context(), "PUT", "/proxies/"+url.PathEscape(group), map[string]string{"name": input.Name}); err != nil {
 		problem(w, 502, "核心未能切换节点")
 		return
@@ -347,10 +414,23 @@ func (s *Server) commitFailure(w http.ResponseWriter, err error) {
 	message := "更新失败，已保留上一次可用配置"
 	if errors.Is(err, ErrRollback) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = s.options.Service.SetEnabled(ctx, false)
+		_ = s.setEnabled(ctx, false)
 		cancel()
 		message = "配置恢复未完成，代理已回退直连；请通过 SSH 重启管理服务恢复"
 	}
 	s.recordError(message)
 	problem(w, 500, message)
+}
+
+func (s *Server) bootstrapRetry(w http.ResponseWriter, r *http.Request) {
+	service, ok := s.options.Service.(*ScriptService)
+	if !ok {
+		problem(w, 503, "恢复服务不可用")
+		return
+	}
+	if err := service.run(r.Context(), "bootstrap-retry"); err != nil {
+		problem(w, 503, "恢复任务未能启动")
+		return
+	}
+	reply(w, 202, map[string]bool{"started": true})
 }

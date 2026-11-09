@@ -77,6 +77,15 @@ func (s *ScriptService) Enabled() bool {
 }
 func (s *ScriptService) run(ctx context.Context, action string) error {
 	command := exec.CommandContext(ctx, "/bin/sh", filepath.Join(s.Root, "routerctl.sh"), action)
+	command.Env = []string{}
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "CDX_EXPECT_EPOCH=") {
+			command.Env = append(command.Env, entry)
+		}
+	}
+	if intent, ok := ctx.Value(operationKey{}).(operationIntent); ok {
+		command.Env = append(command.Env, "CDX_EXPECT_EPOCH="+intent.epoch)
+	}
 	if output, err := command.CombinedOutput(); err != nil {
 		_ = os.WriteFile(filepath.Join(s.RunDir, "service-last-error.log"), output, 0600)
 		return fmt.Errorf("路由器操作未完成：%s", action)

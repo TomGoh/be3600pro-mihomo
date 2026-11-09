@@ -86,6 +86,7 @@ func runAgent(root, runDir string) error {
 	if err = atomicWrite(filepath.Join(root, "agent-curl.conf"), []byte(curlConfig)); err != nil {
 		return err
 	}
+	server.StartMaintenance(context.Background())
 	https := &http.Server{Addr: "192.168.31.1:9443", Handler: server, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 90 * time.Second, WriteTimeout: 180 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 * 1024, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	return https.ListenAndServeTLS(identity.CertPath, identity.KeyPath)
 }

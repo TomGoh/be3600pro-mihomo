@@ -81,6 +81,8 @@ class GameBypass(unittest.TestCase):
         data=self.root/'data';run=self.root/'run';tools=self.root/'tools'
         data.mkdir();run.mkdir();tools.mkdir()
         for name in ['enabled','scope','bypass-active']:(run/name).write_text('1\n')
+        (data/'lifecycle.sh').write_text((ROOT/'scripts/lifecycle.sh').read_text())
+        (tools/'flock').write_text((ROOT/'tests/fixtures/flock.py').read_text().replace('#!/usr/bin/env python3','#!'+os.sys.executable));(tools/'flock').chmod(0o700)
         (data/'desired-enabled').write_text('1\n')
         code=(ROOT/'scripts/routerctl.sh').read_text().replace('DATA=/data/codex-router','DATA='+str(data)).replace('RUN=/tmp/codex-mihomo','RUN='+str(run))
         script=self.root/'routerctl.sh';script.write_text(code)

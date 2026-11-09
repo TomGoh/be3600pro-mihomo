@@ -171,3 +171,29 @@ func TestInterruptedTransactionRestoresLastCommittedState(t *testing.T) {
 		t.Fatal("uncommitted selection survived recovery")
 	}
 }
+
+func TestReloadSeesMatchingConfigAndStateAndRollbackRestoresBoth(t *testing.T) {
+	store, state := storeFixture(t)
+	state.Selections["Policy"] = "new-node"
+	calls := 0
+	err := store.Commit(context.Background(), map[string]any{"mode": "global"}, state, func(context.Context, string) error { return nil }, func(context.Context) error {
+		cfg, current, e := store.Snapshot()
+		if e != nil {
+			return e
+		}
+		calls++
+		if calls == 1 {
+			if cfg["mode"] != "global" || current.Selections["Policy"] != "new-node" {
+				t.Errorf("mixed candidate config/state: %+v %+v", cfg, current)
+			}
+			return errors.New("reject candidate")
+		}
+		if cfg["mode"] != "rule" || current.Selections["Policy"] != "old-node" {
+			t.Errorf("mixed rollback config/state")
+		}
+		return nil
+	})
+	if err == nil || calls != 2 {
+		t.Fatalf("rollback calls=%d err=%v", calls, err)
+	}
+}

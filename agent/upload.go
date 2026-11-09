@@ -46,8 +46,14 @@ func (s *Server) uploadCore(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "内核包校验失败，现有内核未改变")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 50*time.Second)
 	defer cancel()
+	unlock, err := lockFile(ctx, filepath.Join(s.options.RunDir, "core-install.lock"))
+	if err != nil {
+		problem(w, 409, "核心正在恢复，请稍后重试")
+		return
+	}
+	defer unlock()
 	wasEnabled := s.options.Service.Enabled()
 	desired, _ := os.ReadFile(filepath.Join(s.options.Root, "desired-enabled"))
 	restore := wasEnabled || strings.TrimSpace(string(desired)) == "1"
@@ -62,7 +68,7 @@ func (s *Server) uploadCore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if restore {
-			if err = s.options.Service.SetEnabled(ctx, true); err != nil {
+			if err = s.setEnabled(ctx, true); err != nil {
 				problem(w, 503, "核心已就绪，但代理启用失败")
 				return
 			}
@@ -128,7 +134,7 @@ func (s *Server) uploadCore(w http.ResponseWriter, r *http.Request) {
 		if err = os.Rename(s.options.CorePath, previous); err != nil {
 			_ = s.options.Service.StartCore(ctx)
 			if wasEnabled {
-				_ = s.options.Service.SetEnabled(ctx, true)
+				_ = s.setEnabled(ctx, true)
 			}
 			problem(w, 500, "无法备份旧内核")
 			return
@@ -146,7 +152,7 @@ func (s *Server) uploadCore(w http.ResponseWriter, r *http.Request) {
 			_ = os.Rename(previous, s.options.CorePath)
 			_ = s.options.Service.StartCore(ctx)
 			if wasEnabled {
-				_ = s.options.Service.SetEnabled(ctx, true)
+				_ = s.setEnabled(ctx, true)
 			}
 		}
 		problem(w, 503, "内核恢复未完成，已尝试恢复旧服务")
@@ -156,7 +162,7 @@ func (s *Server) uploadCore(w http.ResponseWriter, r *http.Request) {
 	_, state, _ := s.store.Snapshot()
 	s.restoreSelections(ctx, state)
 	if restore {
-		if err = s.options.Service.SetEnabled(ctx, true); err != nil {
+		if err = s.setEnabled(ctx, true); err != nil {
 			problem(w, 503, "内核已恢复，但节点尚未可用，代理保持关闭")
 			return
 		}
