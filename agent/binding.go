@@ -213,32 +213,36 @@ func (s *Server) applyImported(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "请先确认将移除的节点")
 		return
 	}
-	if err = s.commitImported(r.Context(), cfg, state, preview.Nodes, preview.URL); err != nil {
+	if _, err = s.commitImported(r.Context(), cfg, state, preview.Nodes, preview.URL); err != nil {
 		s.commitFailure(w, err)
 		return
 	}
 	reply(w, 200, map[string]any{"bound": true, "nodeCount": len(preview.Nodes)})
 }
-func (s *Server) commitImported(ctx context.Context, cfg map[string]any, state State, nodes []any, source string) error {
+func (s *Server) commitImported(ctx context.Context, cfg map[string]any, state State, nodes []any, source string) (Subscription, error) {
 	total := len(nodes)
 	for _, sub := range state.Subscriptions {
 		total += sub.NodeCount
 	}
 	if state.Imported == nil && len(state.Subscriptions) >= 10 {
-		return errors.New("最多保存 10 份订阅")
+		return Subscription{}, errors.New("最多保存 10 份订阅")
 	}
 	if total > 2000 {
-		return errors.New("节点数量超过上限")
+		return Subscription{}, errors.New("节点数量超过上限")
 	}
 	applyImportedNodes(cfg, &state, nodes)
 	state.Imported = &Subscription{ID: "imported", Name: "已导入配置的订阅", URL: source, NodeCount: len(nodes), UpdatedAt: time.Now().Unix()}
-	return s.commitConfig(ctx, cfg, state, s.options.Validate, func(ctx context.Context) error {
+	err := s.commitConfig(ctx, cfg, state, s.options.Validate, func(ctx context.Context) error {
 		_, current, e := s.store.Snapshot()
 		if e != nil {
 			return e
 		}
 		return s.fullReload(ctx, current)
 	})
+	if err != nil {
+		return Subscription{}, err
+	}
+	return *state.Imported, nil
 }
 func (s *Server) updateImported(w http.ResponseWriter, r *http.Request) {
 	cfg, state, err := s.store.Snapshot()
@@ -258,9 +262,10 @@ func (s *Server) updateImported(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "更新将移除旧节点，请先重新预览并确认")
 		return
 	}
-	if err = s.commitImported(ctx, cfg, state, nodes, state.Imported.URL); err != nil {
+	committed, err := s.commitImported(ctx, cfg, state, nodes, state.Imported.URL)
+	if err != nil {
 		s.commitFailure(w, err)
 		return
 	}
-	reply(w, 200, map[string]any{"subscription": publicSubscription(*state.Imported)})
+	reply(w, 200, map[string]any{"subscription": publicSubscription(committed)})
 }

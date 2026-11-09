@@ -355,28 +355,37 @@ func (s *Server) selectNode(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "节点不在当前策略组候选列表中")
 		return
 	}
-	if err = s.disableManualFailover(group); err != nil {
-		problem(w, 500, "无法停用自动切换，节点未改变")
+	_, state, err := s.store.Snapshot()
+	if err != nil {
+		problem(w, 500, "无法读取节点设置，节点未改变")
 		return
 	}
+	previousState, _ := json.Marshal(state)
 	if _, err = s.options.Core.Request(r.Context(), "PUT", "/proxies/"+url.PathEscape(group), map[string]string{"name": input.Name}); err != nil {
 		problem(w, 502, "核心未能切换节点")
 		return
 	}
-	_, state, err := s.store.Snapshot()
+	state.Selections[group] = input.Name
+	data, _ := json.Marshal(state)
+	err = s.store.requireSpace(uint64(len(data) * 2))
+	selectionAttempted := false
 	if err == nil {
-		state.Selections[group] = input.Name
-		data, _ := json.Marshal(state)
-		err = s.store.requireSpace(uint64(len(data) * 2))
-		if err == nil {
-			err = atomicWrite(filepath.Join(s.options.Root, "state.json"), data)
-		}
+		selectionAttempted = true
+		err = atomicWrite(filepath.Join(s.options.Root, "state.json"), data)
+	}
+	// A failed switch or unsaved selection must not silently disable the
+	// existing automatic policy. Mutations share the same lock as failover.
+	if err == nil {
+		err = s.disableManualFailover(group)
 	}
 	if err != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, _ = s.options.Core.Request(ctx, "PUT", "/proxies/"+url.PathEscape(group), map[string]string{"name": p.Now})
-		problem(w, 500, "选择未能保存，已恢复原节点")
+		if selectionAttempted {
+			_ = atomicWrite(filepath.Join(s.options.Root, "state.json"), previousState)
+		}
+		problem(w, 500, "选择未能保存，已尝试恢复原节点和设置，请刷新确认")
 		return
 	}
 	reply(w, 200, map[string]string{"name": input.Name})

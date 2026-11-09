@@ -173,7 +173,22 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 		_, _ = z.Write(raw)
 		_ = z.Close()
 		cache := filepath.Join(s.options.Root, "subcache", filepath.Base(sub.Path)+".gz")
-		if _, e := os.Stat(cache); os.IsNotExist(e) {
+		if existing, e := os.ReadFile(cache); e == nil {
+			// Gzip encodings can differ while containing identical provider bytes.
+			// Bound expansion and reject corruption (including checksum failures)
+			// before publishing a configuration that would fail after reboot.
+			reader, e := gzip.NewReader(bytes.NewReader(existing))
+			if e != nil {
+				problem(w, 400, "节点持久缓存损坏，未恢复配置")
+				return
+			}
+			cached, readErr := io.ReadAll(io.LimitReader(reader, int64(len(raw))+1))
+			_ = reader.Close()
+			if readErr != nil || !bytes.Equal(cached, raw) {
+				problem(w, 400, "节点持久缓存冲突或损坏，未恢复配置")
+				return
+			}
+		} else if os.IsNotExist(e) {
 			if err = s.store.requireSpace(uint64(compressed.Len()*2 + 4096)); err != nil {
 				problem(w, 507, "节点恢复缓存空间不足")
 				return
@@ -184,6 +199,9 @@ func (s *Server) restoreBackup(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			created = append(created, cache)
+		} else {
+			problem(w, 500, "无法读取节点持久缓存，未恢复配置")
+			return
 		}
 	}
 	err = s.store.Commit(ctx, backup.Config, backup.State, s.options.Validate, func(ctx context.Context) error {
