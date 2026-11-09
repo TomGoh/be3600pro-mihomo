@@ -1,5 +1,7 @@
 # be3600pro-mihomo
 
+[![CI](https://github.com/TomGoh/be3600pro-mihomo/actions/workflows/ci.yml/badge.svg)](https://github.com/TomGoh/be3600pro-mihomo/actions/workflows/ci.yml)
+
 在 **小米 BE3600 Pro（RN01）原厂系统**上运行 Mihomo，通过 Android App 在家庭局域网管理代理。
 
 **当前是预览版本。实机验证对象只有 RN01、原厂固件 1.0.74、默认 LAN `192.168.31.1/24`。BE3600、其他型号、其他固件和自定义 LAN 均未验证。** 工具会拒绝未经验证的型号或版本；项目不刷固件、不修改启动分区、不修改 root 密码。
@@ -58,4 +60,4 @@ Android App ── 局域网 HTTPS 9443 + 证书指纹/令牌 ── 管理服�
 
 OpenWrt xtables 扩展从官方归档取得并验证 SHA-256，保留其 GPL-2.0 许可信息；来源与文件校验值见 `release/xtables-release.json`。本仓库不包含小米原厂固件镜像或反编译固件代码。第三方来源见 [NOTICE](NOTICE)。
 
-这是独立社区项目，与小米、TCL、Mihomo 上游无隶属或官方背书关系。
+这是一个独立开源项目，与小米、TCL、Mihomo 上游无隶属或官方背书关系。

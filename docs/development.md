@@ -81,6 +81,18 @@ python3 -m unittest discover -s android/tests -p '*_test.py' -v
 
 这些测试使用临时目录和记录用的伪防火墙工具，不修改电脑或路由器防火墙。Go 服务测试在 `agent/` 中运行。`tests/udp-peer` 和 `tests/tcp-transition` 是实机 peer 源码，不会由普通 Python 单元测试自动连接路由器。
 
+## GitHub Actions CI
+
+`.github/workflows/ci.yml` 在推送 `main`、推送 `v*` 标签、提交 Pull Request 或手动触发时运行：
+
+- Python 3.11 / 3.13：工具、防火墙规则和 Android 恢复资产回归。
+- Go：所有三个模块的 race 测试、vet、格式检查，以及管理服务和诊断 peer 的 Linux ARMv7 编译。
+- Android：JDK 21、platform 35、build-tools 36.0.0；从官方基础内核和仓库差分重建并校验恢复包，再执行完整 App 构建、主机侧测试、APK 签名和资源对齐检查。
+
+工作流只有仓库读取权限，不需要路由器密码、配对文件、订阅或发布签名密钥，不运行连接真实路由器的诊断脚本。Actions 固定到提交 SHA。CI 通过代表主机侧检查和交叉编译通过，不能代替实机重启、透明 socket 或游戏验证。
+
+成功的构建会保留管理服务与测试 APK 产物 14 天。APK 每次使用临时生成的签名密钥，**不能用来覆盖安装本机签名或其他 CI 运行签名的 App**；需要持续升级时应自行保存并复用签名密钥。临时密钥及其密码不会上传为产物。
+
 ## 显式实机诊断
 
 低负载采样，不启动代理、不给 WAN 跑测速：

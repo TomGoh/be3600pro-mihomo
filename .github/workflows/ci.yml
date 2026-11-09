@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }} regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Tool and firewall regression tests (no router access)
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Android recovery asset tests
+        run: python -m unittest discover -s android/tests -p '*_test.py' -v
+
+  go:
+    name: Go race, vet and ARMv7 build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l agent tests/udp-peer tests/tcp-transition)"
+      - name: Race tests and vet for all Go modules
+        run: |
+          for module in agent tests/udp-peer tests/tcp-transition; do
+            go -C "$module" test -race -count=1 ./...
+            go -C "$module" vet ./...
+          done
+      - name: Build router management service
+        run: |
+          sh scripts/build-agent.sh
+          git diff --exit-code
+      - name: Cross-compile Linux ARMv7 diagnostic peers
+        run: |
+          mkdir -p build/peers
+          for peer in udp-peer tcp-transition; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
+              go -C "tests/$peer" build -trimpath -o "$PWD/build/peers/$peer" .
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: router-agent-armv7
+          path: |
+            build/agent/router-agent
+            build/agent/router-agent.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android APK and pinned core recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - name: Install pinned Android SDK packages
+        run: sdkmanager 'platforms;android-35' 'build-tools;36.0.0'
+      - run: python -m pip install -r requirements.txt
+      - name: Reconstruct and verify pinned Mihomo recovery package
+        run: python scripts/restore-core-host.py
+      - name: Build, test and verify APK using an ephemeral signing key
+        run: bash android/build.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-apk-ci-test-only
+          path: build/android/router-proxy-*.apk
+          if-no-files-found: error
+          retention-days: 14
