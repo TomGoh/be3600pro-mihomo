@@ -142,10 +142,19 @@ func RunHTTP(parent context.Context, o HTTPOptions, emit func(HTTPResult)) error
 							r.StopReason = "budget"
 							break
 						}
-						n, readErr := response.Body.Read(buffer[:allowance])
+						n, readErr := readChunk(response.Body, buffer[:allowance])
 						budget.refund(allowance - n)
 						r.Bytes += int64(n)
 						_, _ = digest.Write(buffer[:n])
+						if readErr != nil {
+							if readErr != io.EOF {
+								err = readErr
+							}
+							break
+						}
+						if response.ContentLength >= 0 && r.Bytes == response.ContentLength {
+							break
+						}
 						if o.ReadRate > 0 && n > 0 {
 							delay := time.Duration(float64(r.Bytes)/float64(o.ReadRate)*float64(time.Second)) - time.Since(started)
 							if delay > 0 {
@@ -168,9 +177,6 @@ func RunHTTP(parent context.Context, o HTTPOptions, emit func(HTTPResult)) error
 							if readErr != io.EOF {
 								err = readErr
 							}
-							break
-						}
-						if response.ContentLength >= 0 && r.Bytes == response.ContentLength {
 							break
 						}
 					}
@@ -222,4 +228,27 @@ func RunHTTP(parent context.Context, o HTTPOptions, emit func(HTTPResult)) error
 		return errors.New("HTTP probe failed or produced no response evidence")
 	}
 	return nil
+}
+
+// Fill a bounded chunk while preserving the body's own EOF/error. This observes
+// short responses before a pacing delay can replace their outcome with timeout.
+func readChunk(source io.Reader, buffer []byte) (int, error) {
+	total := 0
+	empty := 0
+	for total < len(buffer) {
+		n, err := source.Read(buffer[total:])
+		total += n
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			empty++
+			if empty >= 100 {
+				return total, io.ErrNoProgress
+			}
+		} else {
+			empty = 0
+		}
+	}
+	return total, nil
 }

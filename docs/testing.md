@@ -33,11 +33,13 @@ NETPROBE_BINARY="$PWD/build/netprobe" \
 
 Linux 交付 job 使用 Go 1.26.8 编译固定补丁中的测试，再调用 `scripts/test-udp-isolated-linux.sh`。运行时使用内部网络、scratch 镜像、只读测试文件及仅发送端所需的 NET_RAW 能力；不下载运行时镜像、不修改宿主路由或家庭路由器。脚本只清理本次创建的容器/网络。发送端与独立 peer 的退出码都必须为零；能力缺失或环境不支持时应失败，不静默跳过。
 
+容器 fixture 会先从已分配的 IPv6 地址向 peer 的 discard 端口发送一个字节，建立普通 NDP 邻居解析，再验证非本地源地址回包。否则首次伪源发送可能只返回写入成功、却没有可用的目的邻居；发送端成功不能代替实际 peer 收到数据。此准备逻辑仅加入 CI 测试入口，不改动发布内核源码补丁；两端交付检查仍完整执行。
+
 ## 通用探针
 
 `tests/netprobe` 支持 macOS/Linux，不依赖 RN01。输出为 JSONL，包含 `run-start`、测量记录及 `run-end`；进程崩溃或强制终止时，缺少结束记录意味着证据不完整。探针不修改代理开关、节点、路由或防火墙。
 
-HTTP 每次运行有全局字节预算，所有 worker 共享，最大 512 MiB；持续时间不超过 30 分钟，最多 8 个 worker、每 worker 最多 1000 次请求。TLS 正常验证，不提供跳过证书校验开关，不跟随重定向。HTTP 除 loopback 外需显式 `-allow-http`，只用于受控 peer。`-read-rate` 限制应用读取速度，不是严格的网卡整形，不能据此声称瞬时链路速率受限。
+HTTP 每次运行有全局读取字节预算，所有 worker 共享，最大 512 MiB；持续时间不超过 30 分钟，最多 8 个 worker、每 worker 最多 1000 次请求。TLS 正常验证，不提供跳过证书校验开关，不跟随重定向。HTTP 除 loopback 外需显式 `-allow-http`，只用于受控 peer。`-read-rate` 限制应用读取速度，不是严格的网卡整形；TCP/HTTP 可能预取数据，读取预算也不等于严格的 WAN 字节上限。严格流量限制需要受控服务端限制响应长度并独立统计链路字节。
 
 以下变量由操作者提供，URL 不应含账号或令牌；不要复制私人路径或假定固定 SSID/MAC：
 
@@ -60,10 +62,11 @@ build/netprobe -run-live -url "${STREAM_URL:?set a controlled large response}" \
   -interface "$TEST_INTERFACE" -family tcp4 -stream \
   -duration 10m -requests 1 -read-rate 65536 -max-bytes 67108864 \
   > "$RUN_DIR/stream.jsonl"
-python3 scripts/analyze-stability.py http "$RUN_DIR/stream.jsonl" --minimum-seconds 590
+python3 scripts/analyze-stability.py http "$RUN_DIR/stream.jsonl" \
+  --minimum-seconds 590 --minimum-bytes 38000000
 ```
 
-`--minimum-seconds` 要求至少一个实际请求持续足够长，并检查运行结束记录的时间；运行后空等不算持续传输。预算过小、内容过短或样本不足返回“证据不足”。阶段应另记录最大进度间隔、连接复用、新连接数量和失败，不能只比较平均速度。
+`--minimum-seconds` 要求至少一个实际请求持续足够长，并检查运行结束记录的时间；运行后空等不算持续传输。`--minimum-bytes` 明确最低有效传输量，避免“一字节后长时间停顿”被当成持续下载。预算过小、内容过短或样本不足返回“证据不足”。限速长响应测量的是应用接收过程，服务端可能提前发送或缓冲；要证明连接活性，应同时测定期小请求、连接复用、新连接数量及最大进度间隔，不能只比较慢速读取耗时或平均速度。
 
 ## UDP 回显与抓包
 

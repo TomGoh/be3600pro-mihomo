@@ -39,29 +39,34 @@ def parse_pcap(source,peer_ip,peer_port):
             if len(frame)<offset+20:raise EvidenceError('truncated IPv4 header')
             length=(frame[offset]&15)*4
             if frame[offset]>>4!=4 or length<20 or len(frame)<offset+length:raise EvidenceError('invalid IPv4 header')
-            if struct.unpack('!H',frame[offset+6:offset+8])[0]&0x1fff:
+            declared=struct.unpack('!H',frame[offset+2:offset+4])[0]
+            ip_end=offset+declared
+            if declared<length or ip_end>original:raise EvidenceError('invalid IPv4 declared length')
+            if struct.unpack('!H',frame[offset+6:offset+8])[0]&0x3fff:
                 result['fragmentsSkipped']+=1;continue
             next_header=frame[offset+9]
             src=ipaddress.ip_address(frame[offset+12:offset+16]);dst=ipaddress.ip_address(frame[offset+16:offset+20]);offset+=length
         elif protocol==0x86dd:
             if len(frame)<offset+40 or frame[offset]>>4!=6:raise EvidenceError('truncated or invalid IPv6 header')
+            declared=struct.unpack('!H',frame[offset+4:offset+6])[0]
+            ip_end=offset+40+declared
+            if ip_end>original:raise EvidenceError('invalid IPv6 declared length')
             next_header=frame[offset+6];src=ipaddress.ip_address(frame[offset+8:offset+24]);dst=ipaddress.ip_address(frame[offset+24:offset+40]);offset+=40
             for _ in range(8):
                 if next_header not in (0,43,44,51,60):break
-                if len(frame)<offset+8:raise EvidenceError('truncated IPv6 extension')
+                if len(frame)<offset+8 or ip_end<offset+8:raise EvidenceError('truncated IPv6 extension')
                 current=next_header;next_header=frame[offset]
                 if current==44:
-                    if struct.unpack('!H',frame[offset+2:offset+4])[0]&0xfff8:
-                        result['fragmentsSkipped']+=1;next_header=-1;break
-                    length=8
+                    result['fragmentsSkipped']+=1;next_header=-1;break
                 else:length=(frame[offset+1]+(2 if current==51 else 1))*(4 if current==51 else 8)
-                if len(frame)<offset+length:raise EvidenceError('truncated IPv6 extension')
+                if len(frame)<offset+length or ip_end<offset+length:raise EvidenceError('truncated IPv6 extension')
                 offset+=length
+            if next_header in (0,43,44,51,60):raise EvidenceError('IPv6 extension chain exceeds analysis bound')
         else:continue
         if next_header!=17 or peer not in (src,dst):continue
-        if len(frame)<offset+8:raise EvidenceError('truncated UDP header')
+        if len(frame)<offset+8 or ip_end<offset+8:raise EvidenceError('truncated UDP header')
         sport,dport,udp_length,_=struct.unpack('!HHHH',frame[offset:offset+8])
-        if udp_length<8:raise EvidenceError('invalid UDP length')
+        if udp_length<8 or offset+udp_length>ip_end:raise EvidenceError('invalid UDP length')
         body=frame[offset+8:offset+udp_length]
         if not body.startswith(MAGIC):continue
         if len(body)<34:
@@ -98,7 +103,8 @@ def compare_udp(clients,capture,capture_drops=None):
     if capture_drops is not None:number(capture_drops,'capture drops',True)
     valid=capture_drops==0 and not capture['truncatedIdentities'] and not capture['fragmentsSkipped']
     entering=set(capture['requests'])&expected;leaving=set(capture['replies'])&expected
-    inconsistent=bool((expected-missing)-leaving) if valid else False
+    inconsistent=bool((expected-missing)-(entering&leaving)) if valid else False
+    valid=valid and bool(entering or leaving)
     return {'verdict':'fail' if missing or corrupt or client_error else 'inconclusive' if not sent or inconsistent or not valid or incomplete else 'pass',
             'sent':sent,'received':received,'missing':len(missing),'corrupt':corrupt,
             'attributionVerified':valid and not inconsistent and bool(sent),

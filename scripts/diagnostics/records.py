@@ -34,8 +34,9 @@ def verdict(failed,incomplete):
     return 'fail' if failed else 'inconclusive' if incomplete else 'pass'
 
 
-def analyze_http(rows,minimum_samples=1,minimum_seconds=0):
+def analyze_http(rows,minimum_samples=1,minimum_seconds=0,minimum_bytes=0):
     number(minimum_samples,'minimum samples',True);number(minimum_seconds,'minimum seconds')
+    number(minimum_bytes,'minimum bytes',True)
     if minimum_samples<1:raise EvidenceError('minimum samples must be positive')
     requests=[];failed=[];planned=[]
     for row in rows:
@@ -63,7 +64,7 @@ def analyze_http(rows,minimum_samples=1,minimum_seconds=0):
     # Per-request elapsed time is not aggregate link throughput under concurrency.
     active=sum(r['seconds'] for r in measured)
     total=sum(r['bytes'] for r in measured+failed)
-    incomplete=len(measured)<minimum_samples or duration<minimum_seconds
+    incomplete=len(measured)<minimum_samples or duration<minimum_seconds or sum(r['bytes'] for r in measured)<minimum_bytes
     return {'verdict':verdict(bool(failed),incomplete),'completed':len(requests),'plannedStops':len(planned),'failed':len(failed),
             'responseSamples':len(measured),'newConnections':sum(not r['reused'] for r in requests),
             'reusedRequests':sum(r['reused'] for r in requests),'transferredBytes':total,
@@ -75,8 +76,8 @@ def analyze_http(rows,minimum_samples=1,minimum_seconds=0):
             'rateBasis':'sum of measured request durations; not aggregate wire throughput'}
 
 
-def evaluate_run(rows,expected_enabled=None,status_samples=None,minimum_samples=1,minimum_seconds=0):
-    result=analyze_http(rows,minimum_samples=minimum_samples,minimum_seconds=minimum_seconds)
+def evaluate_run(rows,expected_enabled=None,status_samples=None,minimum_samples=1,minimum_seconds=0,minimum_bytes=0):
+    result=analyze_http(rows,minimum_samples=minimum_samples,minimum_seconds=minimum_seconds,minimum_bytes=minimum_bytes)
     start=[r for r in rows if r.get('event')=='run-start'];end=[r for r in rows if r.get('event')=='run-end']
     incomplete=len(start)!=1 or len(end)!=1
     failed=result['verdict']=='fail'

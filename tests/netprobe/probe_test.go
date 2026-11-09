@@ -212,6 +212,38 @@ func TestHTTPVerifiesTLSAndAcceptsAnExplicitTestCA(t *testing.T) {
 	}
 }
 
+func TestHTTPPacingDoesNotHideShortBodyOrInflateACompleteBody(t *testing.T) {
+	for _, short := range []bool{false, true} {
+		t.Run(map[bool]string{false: "complete", true: "short"}[short], func(t *testing.T) {
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				length := "10"
+				if short {
+					length = "100"
+				}
+				w.Header().Set("Content-Length", length)
+				_, _ = w.Write([]byte("1234567890"))
+			}))
+			defer s.Close()
+			o := httpOptions(s.URL)
+			o.Stream = true
+			o.Duration = 150 * time.Millisecond
+			o.ReadRate = 1
+			o.Requests = 1
+			var row HTTPResult
+			err := RunHTTP(context.Background(), o, func(r HTTPResult) { row = r })
+			if short && err == nil {
+				t.Fatal("pacing hid unexpected EOF")
+			}
+			if !short && (err != nil || !row.OK) {
+				t.Fatalf("complete response failed: %v %+v", err, row)
+			}
+			if row.StopReason != "" || row.Seconds >= .14 {
+				t.Fatalf("short/complete body became a fake long response: %+v", row)
+			}
+		})
+	}
+}
+
 func TestCLIRequiresExplicitNetworkOptIn(t *testing.T) {
 	var called atomic.Bool
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called.Store(true) }))

@@ -83,4 +83,8 @@ class EvidenceTests(unittest.TestCase):
         bad=self.row();bad.update(event='progress',seconds='broken')
         with self.assertRaises(EvidenceError):analyze_http([self.row(),bad])
 
+    def test_one_byte_and_a_long_wait_is_insufficient_transfer_evidence(self):
+        r=self.row();r.update(ok=False,stopReason='duration',seconds=60,error='context deadline exceeded',bytes=1)
+        self.assertEqual(analyze_http([r],minimum_seconds=59,minimum_bytes=1000)['verdict'],'inconclusive')
+
 if __name__=='__main__':unittest.main()

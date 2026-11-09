@@ -1,0 +1,38 @@
+//go:build linux && udp_integration
+
+package udpreply
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"testing"
+	"time"
+)
+
+// Establish ordinary IPv6 neighbor discovery from the container's assigned
+// address before testing replies with an intentionally nonlocal source address.
+// This is network-fixture setup, not a replacement for peer delivery assertions.
+func TestMain(m *testing.M) {
+	if target := os.Getenv("UDP_REPLY_PEER6"); target != "" {
+		host, _, err := net.SplitHostPort(target)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		conn, err := net.DialTimeout("udp6", net.JoinHostPort(host, "9"), time.Second)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "IPv6 fixture route:", err)
+			os.Exit(1)
+		}
+		_ = conn.SetDeadline(time.Now().Add(time.Second))
+		if _, err = conn.Write([]byte{0}); err != nil {
+			fmt.Fprintln(os.Stderr, "IPv6 fixture warmup:", err)
+			os.Exit(1)
+		}
+		_, err = conn.Read(make([]byte, 1))
+		fmt.Fprintln(os.Stderr, "IPv6 assigned-source neighbor warmup:", conn.LocalAddr(), "result:", err)
+		_ = conn.Close()
+	}
+	os.Exit(m.Run())
+}

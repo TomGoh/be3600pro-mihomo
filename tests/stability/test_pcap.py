@@ -11,9 +11,9 @@ from diagnostics.records import EvidenceError
 
 NONCE='11'*16
 
-def capture(frames,link=1,endian='<'):
+def capture(frames,link=1,endian='<',original_sizes=None):
     header=struct.pack(endian+'IHHIIII',0xa1b2c3d4,2,4,0,0,160,link)
-    return header+b''.join(struct.pack(endian+'IIII',1,0,len(f),len(f))+f for f in frames)
+    return header+b''.join(struct.pack(endian+'IIII',1,0,len(f),original_sizes[i] if original_sizes else len(f))+f for i,f in enumerate(frames))
 
 def packet(reply=False,seq=0,ipv6=False,link=1,nonce=NONCE):
     body=b'cdx-udp-v1'+struct.pack('!II',0,seq)+bytes.fromhex(nonce)+bytes(20)
@@ -62,7 +62,7 @@ class PcapTests(unittest.TestCase):
 
     def test_truncated_probe_identity_prevents_attribution(self):
         f=packet()[:65]
-        p=parse_pcap(io.BytesIO(capture([f])),peer_ip='198.51.100.77',peer_port=27051)
+        p=parse_pcap(io.BytesIO(capture([f],original_sizes=[len(packet())])),peer_ip='198.51.100.77',peer_port=27051)
         self.assertFalse(compare_udp(clients(),p,capture_drops=0)['attributionVerified'])
 
     def test_empty_and_inconsistent_client_records_cannot_pass(self):
@@ -90,5 +90,33 @@ class PcapTests(unittest.TestCase):
         p=parse_pcap(io.BytesIO(capture([packet(),packet(True)])),peer_ip='198.51.100.77',peer_port=27051)
         rows=[dict(worker=0,nonce=NONCE,sent=1,received=1,missing=[],corrupt=0,expectedPackets=2)]
         self.assertEqual(compare_udp(rows,p,capture_drops=0)['verdict'],'inconclusive')
+
+    def test_declared_ip_and_udp_lengths_are_checked(self):
+        for offset,value in [(16,20),(38,65535)]:
+            frame=bytearray(packet(True));frame[offset:offset+2]=struct.pack('!H',value)
+            with self.subTest(offset=offset),self.assertRaises(EvidenceError):
+                parse_pcap(io.BytesIO(capture([bytes(frame)])),peer_ip='198.51.100.77',peer_port=27051)
+        frame=bytearray(packet(True,ipv6=True));frame[18:20]=struct.pack('!H',8)
+        with self.assertRaises(EvidenceError):parse_pcap(io.BytesIO(capture([bytes(frame)])),peer_ip='2001:db8::77',peer_port=27051)
+
+    def test_initial_fragments_do_not_claim_complete_datagrams(self):
+        rs=[dict(worker=0,nonce=NONCE,sent=1,received=1,missing=[],corrupt=0)]
+        first=bytearray(packet(True));first[20:22]=b'\x20\x00'
+        p=parse_pcap(io.BytesIO(capture([packet(),bytes(first)])),peer_ip='198.51.100.77',peer_port=27051)
+        self.assertFalse(compare_udp(rs,p,capture_drops=0)['attributionVerified'])
+        original=bytearray(packet(True,ipv6=True));original[20]=44;length=struct.unpack('!H',original[18:20])[0]+8;original[18:20]=struct.pack('!H',length)
+        first=bytes(original[:54])+bytes([17,0,0,1])+bytes(4)+bytes(original[54:])
+        p=parse_pcap(io.BytesIO(capture([packet(ipv6=True),first])),peer_ip='2001:db8::77',peer_port=27051)
+        self.assertFalse(compare_udp(rs,p,capture_drops=0)['attributionVerified'])
+
+    def test_received_packet_requires_request_and_reply_capture_evidence(self):
+        p=parse_pcap(io.BytesIO(capture([packet(True)])),peer_ip='198.51.100.77',peer_port=27051)
+        rs=[dict(worker=0,nonce=NONCE,sent=1,received=1,missing=[],corrupt=0)]
+        self.assertFalse(compare_udp(rs,p,capture_drops=0)['attributionVerified'])
+
+    def test_empty_capture_does_not_prove_all_packets_were_lost_before_entry(self):
+        p=parse_pcap(io.BytesIO(capture([])),peer_ip='198.51.100.77',peer_port=27051)
+        rs=[dict(worker=0,nonce=NONCE,sent=1,received=0,missing=[0],corrupt=0)]
+        self.assertFalse(compare_udp(rs,p,capture_drops=0)['attributionVerified'])
 
 if __name__=='__main__':unittest.main()

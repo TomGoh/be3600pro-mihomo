@@ -14,6 +14,7 @@ def main():
     http=modes.add_parser('http',help='Analyze one netprobe HTTP JSONL run')
     http.add_argument('log',type=Path)
     http.add_argument('--minimum-samples',type=int,default=1)
+    http.add_argument('--minimum-bytes',type=int,default=0)
     http.add_argument('--minimum-seconds',type=float,default=0,help='Minimum measured duration of a single request, for streaming tests')
     http.add_argument('--expected-enabled',choices=['true','false'])
     http.add_argument('--status-log',type=Path,help='JSONL API status snapshots; no credentials')
@@ -29,7 +30,7 @@ def main():
             rows=read_jsonl(args.log)
             statuses=read_jsonl(args.status_log) if args.status_log else None
             expected=None if args.expected_enabled is None else args.expected_enabled=='true'
-            result=evaluate_run(rows,expected_enabled=expected,status_samples=statuses,minimum_samples=args.minimum_samples,minimum_seconds=args.minimum_seconds)
+            result=evaluate_run(rows,expected_enabled=expected,status_samples=statuses,minimum_samples=args.minimum_samples,minimum_seconds=args.minimum_seconds,minimum_bytes=args.minimum_bytes)
         else:
             rows=read_jsonl(args.client_log)
             clients=[r for r in rows if r.get('event')=='udp']
