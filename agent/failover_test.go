@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -32,5 +33,22 @@ func TestFailoverNeverOverridesManualChoiceOrDisabledPolicy(t *testing.T) {
 	_ = chooseFailover(p, "a", &state, time.Now(), probe)
 	if calls != 0 {
 		t.Fatal("probed disabled/manual choice")
+	}
+}
+
+func TestManualSelectionDisablesAutoPolicyAndPersistsChoice(t *testing.T) {
+	s, core, _, root := serverFixture(t)
+	writeTestJSON(t, filepath.Join(root, "failover.json"), []failoverPolicy{{Enabled: true, Group: "Policy", Candidates: []string{"old-node", "new-node"}}})
+	r := apiRequest(s, "PUT", "/api/groups/Policy", `{"name":"new-node"}`, true)
+	if r.Code != 200 {
+		t.Fatal(r.Code, r.Body.String())
+	}
+	policies, err := s.failoverPolicies()
+	if err != nil || len(policies) != 1 || policies[0].Enabled {
+		t.Fatal("manual override did not disable automatic policy", err)
+	}
+	_, state, _ := s.store.Snapshot()
+	if state.Selections["Policy"] != "new-node" || core.selected != "new-node" {
+		t.Fatal("manual selection not preserved")
 	}
 }
