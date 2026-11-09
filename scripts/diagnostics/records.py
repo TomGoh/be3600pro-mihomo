@@ -1,4 +1,5 @@
 """Strict evidence parsing: absent or damaged evidence must never become a pass."""
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -46,10 +47,20 @@ def analyze_http(rows,minimum_samples=1,minimum_seconds=0,minimum_bytes=0):
         number(row.get('seconds'),'seconds')
         if not isinstance(row.get('ok'),bool) or not isinstance(row.get('reused'),bool):raise EvidenceError('boolean outcome and reuse evidence required')
         if 'unixTime' in row:number(row['unixTime'],'unixTime')
-        if row['event']!='request':continue
+        if row['event']=='progress':continue
         reason=row.get('stopReason','');error=row.get('error','')
         if not isinstance(error,str) or not isinstance(reason,str):raise EvidenceError('error/stopReason must be strings')
         allowed=row['status'] in (200,204,206)
+        if row['event']=='worker-stop':
+            ttfb=number(row.get('ttfbMs'),'ttfbMs')
+            digest=row.get('sha256','')
+            if not isinstance(digest,str):raise EvidenceError('sha256 must be a string')
+            # A worker stop establishes coverage only. It contributes no sample,
+            # duration, transfer bytes or throughput denominator.
+            duration_stop=reason=='duration' and row['status']==0 and ttfb==0 and not digest
+            budget_stop=reason=='budget' and allowed and digest in ('',hashlib.sha256(b'').hexdigest())
+            if row['ok'] or row['bytes']!=0 or error or not (duration_stop or budget_stop):failed.append(row)
+            continue
         duration=reason=='duration' and error=='context deadline exceeded'
         budget=reason=='budget' and error==''
         if allowed and row['bytes']>0 and (duration or budget) and not row['ok']:

@@ -8,6 +8,8 @@ TABLE=166
 PREF=10066
 mkdir -p "$RUN"
 umask 077
+. "$DATA/lifecycle.sh"
+intent_snapshot
 
 ensure_xtables() {
     directory="$RUN/xtables-global"
@@ -58,7 +60,9 @@ desired() {
 }
 
 core_ready() {
-    curl -f -K "$DATA/core-curl.conf" --max-time 2 http://127.0.0.1:9090/version >/dev/null 2>&1
+    curl -f -K "$DATA/core-curl.conf" --max-time 2 http://127.0.0.1:9090/version >/dev/null 2>&1 || return 1
+    [ -x "$RUN/router-agent" ] || return 1
+    "$RUN/router-agent" -root "$DATA" -run "$RUN" -check-routing-ready >/dev/null 2>&1
 }
 
 self_test() {
@@ -180,13 +184,19 @@ enable_pending() {
         printf '%s' "$scope" | grep -Eq '^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$' || { echo INVALID_TEST_MAC; return 1; }
     fi
     [ -x "$RUN/router-agent" ] || { echo RELAY_PLANNER_MISSING; return 1; }
+    exec 6> "$RUN/relay-plan.lock"
+    flock -x -w 12 6 || return 1
     "$RUN/router-agent" -root "$DATA" -run "$RUN" -write-relay-bypass
+    flock -u 6
+    exec 6>&-
     core_ready || { echo CORE_NOT_READY; return 1; }
     self_test || { echo PROXY_TEST_FAILED; return 1; }
+    lifecycle_lock || return 1
+    intent_current || { echo OPERATION_CANCELLED; return 1; }
     disable_runtime
     token="$(date +%s)-$$"
     printf '%s\n' "$token" > "$RUN/pending-token"
-    sh /etc/rc.common "$DATA/rollback.init" restart
+    sh /etc/rc.common "$DATA/rollback.init" restart 9>&-
     trap 'disable_runtime' EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
@@ -207,13 +217,33 @@ enable_pending() {
     printf '%s\n' "$token"
 }
 
+relay_refresh() {
+    [ -f "$RUN/enabled" ] || return 0
+    exec 6> "$RUN/relay-plan.lock"
+    flock -n -x 6 || return 0
+    "$RUN/router-agent" -root "$DATA" -run "$RUN" -write-relay-bypass || return 1
+    lifecycle_lock || return 1
+    [ -f "$RUN/enabled" ] && intent_current || return 0
+    # Populate private sets before the live names are changed. Never flush live sets.
+    sed -e 's/CDX_RLY4/CDX_RLY4N/g' -e 's/CDX_RLY6/CDX_RLY6N/g' "$RUN/relay-endpoints.ipset" > "$RUN/relay-refresh.ipset"
+    trap 'ipset destroy CDX_RLY4N 2>/dev/null || true; ipset destroy CDX_RLY6N 2>/dev/null || true' EXIT
+    ipset restore -exist < "$RUN/relay-refresh.ipset" || return 1
+    ipset swap CDX_RLY4N CDX_RLY4 || return 1
+    if ! ipset swap CDX_RLY6N CDX_RLY6; then
+        ipset swap CDX_RLY4N CDX_RLY4 || true
+        return 1
+    fi
+    date +%s > "$RUN/relay-applied-at"
+}
+
 confirm_pending() {
+    intent_current || return 1
     token=$(cat "$RUN/pending-token") || return 1
     [ -n "$token" ] || return 1
     [ -f "$RUN/enabled" ] || return 1
     if [ ! -s "$RUN/scope" ]; then desired 1 || return 1; fi
     printf '%s\n' "$token" > "$RUN/confirmed-token" || return 1
-    sh /etc/rc.common "$DATA/rollback.init" stop || return 1
+    sh /etc/rc.common "$DATA/rollback.init" stop 9>&- || return 1
 }
 
 case "${1:-status}" in
@@ -230,15 +260,18 @@ case "${1:-status}" in
         /tmp/mihomo -t -d "$RUN" -f "$DATA/config.json" > "$RUN/validate.log" 2>&1
         sh /etc/rc.common "$DATA/core.init" start
         count=0
-        until core_ready; do count=$((count+1)); [ "$count" -lt 25 ] || exit 1; sleep 1; done
+        until core_ready; do count=$((count+1)); [ "$count" -lt 90 ] || exit 1; sleep 1; done
         if [ -x "$RUN/router-agent" ]; then "$RUN/router-agent" -restore-selections; fi
         ;;
-    core-stop) disable_runtime; sh /etc/rc.common "$DATA/core.init" stop ;;
+    core-stop) lifecycle_lock; disable_runtime; sh /etc/rc.common "$DATA/core.init" stop ;;
     enable-pending) enable_pending "${2:-}" ;;
-    confirm) if ! confirm_pending; then disable_runtime; desired 0; exit 1; fi ;;
+    confirm) lifecycle_lock; if ! confirm_pending; then disable_runtime; desired 0; exit 1; fi ;;
     enable) enable_pending ''; if ! confirm_pending; then disable_runtime; desired 0; exit 1; fi ;;
-    disable) disable_runtime; desired 0 ;;
-    disable-runtime) disable_runtime ;;
+    disable) intent_cancel; desired 0; lifecycle_lock; disable_runtime; desired 0 ;;
+    disable-runtime) lifecycle_lock; disable_runtime ;;
+    bootstrap-retry) sh /etc/rc.common "$DATA/bootstrap.init" restart ;;
+    relay-refresh) relay_refresh ;;
+    health) sh "$DATA/health.sh" ;;
     status)
         if [ -f "$RUN/enabled" ]; then enabled=true; else enabled=false; fi
         if [ -s "$RUN/scope" ]; then scope=test-device; else scope=lan; fi

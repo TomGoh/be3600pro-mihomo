@@ -34,13 +34,16 @@ func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := []any{}
+	if state.Imported != nil {
+		items = append(items, publicSubscription(*state.Imported))
+	}
 	for _, sub := range state.Subscriptions {
 		items = append(items, publicSubscription(sub))
 	}
 	// Imported inline nodes are real sources too, but no update URL can be
 	// reconstructed from node credentials. Expose counts only, never credentials.
 	inline, _ := cfg["proxies"].([]any)
-	reply(w, 200, map[string]any{"subscriptions": items, "imported": map[string]any{"nodeCount": len(inline)}})
+	reply(w, 200, map[string]any{"subscriptions": items, "imported": map[string]any{"nodeCount": len(inline), "bound": state.Imported != nil}})
 }
 
 type subscriptionFailure struct {
@@ -77,6 +80,10 @@ func (s *Server) addSubscription(w http.ResponseWriter, r *http.Request) {
 	reply(w, 201, map[string]any{"subscription": publicSubscription(sub)})
 }
 func (s *Server) updateSubscription(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("id") == "imported" {
+		s.updateImported(w, r)
+		return
+	}
 	id := r.PathValue("id")
 	if !subscriptionID.MatchString(id) {
 		problem(w, 400, "订阅标识无效")
@@ -91,7 +98,7 @@ func (s *Server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func cloneState(state State) State {
-	next := State{Subscriptions: append([]Subscription{}, state.Subscriptions...), Selections: map[string]string{}}
+	next := State{Imported: state.Imported, Subscriptions: append([]Subscription{}, state.Subscriptions...), Selections: map[string]string{}}
 	for k, v := range state.Selections {
 		next.Selections[k] = v
 	}
@@ -118,7 +125,11 @@ func (s *Server) changeSubscription(ctx context.Context, id, name, sourceURL str
 		return empty, sourceFailure(404, "订阅不存在")
 	}
 	if id == "" {
-		if len(oldState.Subscriptions) >= 10 {
+		sources := len(oldState.Subscriptions)
+		if oldState.Imported != nil {
+			sources++
+		}
+		if sources >= 10 {
 			return empty, sourceFailure(400, "当前路由器最多保存 10 份订阅")
 		}
 		if name == "" || utf8.RuneCountInString(name) > 40 || strings.IndexFunc(name, unicode.IsControl) >= 0 {
@@ -282,7 +293,7 @@ func (s *Server) changeSubscription(ctx context.Context, id, name, sourceURL str
 		}
 		return nil
 	}
-	if err = s.store.Commit(ctx, cfg, next, s.options.Validate, reload); err != nil {
+	if err = s.commitConfig(ctx, cfg, next, s.options.Validate, reload); err != nil {
 		return empty, err
 	}
 	committed = true
@@ -356,6 +367,21 @@ func (s *Server) removeSubscriptionCache(sub Subscription) {
 }
 
 func (s *Server) deleteSubscription(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("id") == "imported" {
+		cfg, state, err := s.store.Snapshot()
+		if err != nil || state.Imported == nil {
+			problem(w, 404, "订阅不存在")
+			return
+		}
+		state.Imported = nil
+		err = s.commitConfig(r.Context(), cfg, state, s.options.Validate, func(context.Context) error { return nil })
+		if err != nil {
+			s.commitFailure(w, err)
+			return
+		}
+		reply(w, 200, map[string]bool{"unbound": true})
+		return
+	}
 	id := r.PathValue("id")
 	if !subscriptionID.MatchString(id) {
 		problem(w, 400, "订阅标识无效")
@@ -397,7 +423,7 @@ func (s *Server) deleteSubscription(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.fullReload(ctx, current)
 	}
-	if err = s.store.Commit(r.Context(), cfg, next, s.options.Validate, reload); err != nil {
+	if err = s.commitConfig(r.Context(), cfg, next, s.options.Validate, reload); err != nil {
 		s.commitFailure(w, err)
 		return
 	}

@@ -86,6 +86,7 @@ func runAgent(root, runDir string) error {
 	if err = atomicWrite(filepath.Join(root, "agent-curl.conf"), []byte(curlConfig)); err != nil {
 		return err
 	}
+	server.StartMaintenance(context.Background())
 	https := &http.Server{Addr: "192.168.31.1:9443", Handler: server, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 90 * time.Second, WriteTimeout: 180 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 * 1024, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	return https.ListenAndServeTLS(identity.CertPath, identity.KeyPath)
 }
@@ -96,7 +97,21 @@ func main() {
 	restore := flag.Bool("restore-selections", false, "restore persisted selector state after core start")
 	patchCore := flag.Bool("apply-core-patch", false, "verify official base and restore pinned core in RAM")
 	relays := flag.Bool("write-relay-bypass", false, "resolve configured upstream address/port pairs for LAN proxy coexistence")
+	checkRouting := flag.Bool("check-routing-ready", false, "verify host-prepared rule provider readiness")
 	flag.Parse()
+	if *checkRouting {
+		cfg, _, err := (&Store{Root: *root}).Snapshot()
+		if err != nil {
+			log.Fatal("routing configuration unavailable")
+		}
+		secret, _ := cfg["secret"].(string)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if _, err = CheckRoutingReady(ctx, *root, &CoreClient{BaseURL: "http://127.0.0.1:9090", Token: secret}); err != nil {
+			log.Fatal("routing policy not initialized")
+		}
+		return
+	}
 	if *relays {
 		if err := WriteRelayBypass(context.Background(), *root, *runDir, nil); err != nil {
 			log.Fatal("upstream relay planning failed")

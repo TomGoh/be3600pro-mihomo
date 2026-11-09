@@ -46,6 +46,71 @@ class CLIIntegration(unittest.TestCase):
         probe,report,data,_=self.exchange(500)
         self.assertEqual(probe.returncode,1);self.assertEqual(report.returncode,1);self.assertEqual(data['failed'],3)
 
+    def test_measurement_cutoff_cli_preserves_worker_coverage_without_samples(self):
+        for with_sample in [True,False]:
+            with self.subTest(with_sample=with_sample):
+                release=threading.Event();lock=threading.Lock();calls=0
+                class Handler(http.server.BaseHTTPRequestHandler):
+                    protocol_version='HTTP/1.1'
+                    def do_GET(self):
+                        nonlocal calls
+                        with lock:
+                            calls+=1;first=calls==1
+                        if with_sample and first:
+                            self.send_response(200);self.send_header('Content-Length','2');self.end_headers();self.wfile.write(b'ok')
+                        else:release.wait(5)
+                    def log_message(self,*args):pass
+                server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+                thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+                try:
+                    with tempfile.TemporaryDirectory() as td:
+                        log=Path(td)/'probe.jsonl'
+                        with log.open('w') as f:
+                            probe=subprocess.run([PROBE,'-run-live','-url','http://127.0.0.1:'+str(server.server_port),
+                                '-workers','2','-requests','2','-interval','0','-duration','1s'],
+                                stdout=f,stderr=subprocess.PIPE,text=True,timeout=4)
+                        rows=[json.loads(line) for line in log.read_text().splitlines()]
+                        stops=[row for row in rows if row['event']=='worker-stop']
+                        self.assertEqual(len(stops),2)
+                        self.assertEqual({row['worker'] for row in stops},{0,1})
+                        self.assertTrue(all(row['stopReason']=='duration' and not row['ok'] and row['status']==0 and row['bytes']==0 for row in stops))
+                        report=subprocess.run([sys.executable,str(ROOT/'scripts/analyze-stability.py'),'http',str(log)],
+                            capture_output=True,text=True,timeout=4)
+                        data=json.loads(report.stdout)
+                        self.assertEqual(probe.returncode,0 if with_sample else 1,probe.stderr)
+                        self.assertEqual(report.returncode,0 if with_sample else 1,report.stdout+report.stderr)
+                        self.assertEqual(data['responseSamples'],1 if with_sample else 0)
+                        self.assertEqual(data['transferredBytes'],2 if with_sample else 0)
+                        self.assertEqual(data['plannedStops'],0)
+                        if not with_sample:self.assertEqual(data['longestMeasuredRequestSeconds'],0)
+                finally:
+                    release.set();server.shutdown();server.server_close();thread.join(timeout=2)
+
+    def test_stream_duration_stop_still_passes_offline_analysis(self):
+        release=threading.Event()
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version='HTTP/1.1'
+            def do_GET(self):
+                self.send_response(200);self.send_header('Content-Length','100');self.end_headers()
+                self.wfile.write(b'x');self.wfile.flush();release.wait(5)
+            def log_message(self,*args):pass
+        server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                log=Path(td)/'stream.jsonl'
+                with log.open('w') as f:
+                    probe=subprocess.run([PROBE,'-run-live','-url','http://127.0.0.1:'+str(server.server_port),
+                        '-stream','-requests','1','-duration','1s'],stdout=f,stderr=subprocess.PIPE,text=True,timeout=4)
+                report=subprocess.run([sys.executable,str(ROOT/'scripts/analyze-stability.py'),'http',str(log)],
+                    capture_output=True,text=True,timeout=4)
+                self.assertEqual(probe.returncode,0,probe.stderr)
+                self.assertEqual(report.returncode,0,report.stdout+report.stderr)
+                data=json.loads(report.stdout)
+                self.assertEqual(data['responseSamples'],1);self.assertEqual(data['plannedStops'],1)
+                self.assertEqual(data['transferredBytes'],1)
+        finally:release.set();server.shutdown();server.server_close();thread.join(timeout=2)
+
     def test_udp_cli_identity_matches_offline_capture_analysis(self):
         from test_pcap import capture
         peer=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);peer.bind(('127.0.0.1',0));peer.settimeout(.1)

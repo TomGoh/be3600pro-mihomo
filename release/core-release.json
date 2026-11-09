@@ -12,5 +12,6 @@
   "patchSha256": "36d18b2ac96db7bc3fdcf31854d41c73ddacd567f61aa37eb3823d799e0a5591",
   "patchBytes": 662743,
   "sourcePatchSha256": "511bf124a56a278e7d89081cdde8ec5c245640fc2e448c60543d6b666348840e",
-  "sourcePatchBytes": 23310
+  "sourcePatchBytes": 23310,
+  "baseArchiveFallbackUrl": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-linux-armv7-v1.19.32.gz"
 }

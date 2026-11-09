@@ -21,6 +21,8 @@ class RouterLifecycle(unittest.TestCase):
             path.mkdir(parents=True, exist_ok=True)
         for family in ("iptables", "ip6tables"):
             (self.proc / ("bridge-nf-call-" + family)).write_text("1\n")
+        (self.data / "lifecycle.sh").write_text((ROOT / "scripts/lifecycle.sh").read_text())
+        self._tool("flock",(ROOT / "tests/fixtures/flock.py").read_text().replace("#!/usr/bin/env python3","#!"+os.sys.executable))
         (self.data / "desired-enabled").write_text("0\n")
         (self.data / "config.json").write_text('{"mode":"rule"}')
         (self.data / "bypass-rules.sh").write_text((ROOT / "scripts/bypass-rules.sh").read_text())
@@ -75,6 +77,20 @@ class RouterLifecycle(unittest.TestCase):
         self.assertEqual((self.data / "desired-enabled").read_text(), "0\n")
         for family in ("iptables", "ip6tables"):
             self.assertEqual((self.proc / ("bridge-nf-call-" + family)).read_text(), "1\n")
+
+    def test_refresh_populates_private_sets_before_swapping_live_sets(self):
+        import json
+        self.assertEqual(self._enable().returncode,0)
+        log=self.root/'ipset-log'
+        self._tool("ipset",'#!'+os.sys.executable+'\nimport json,os,sys\nwith open(os.environ["IPSET_LOG"],"a") as f:f.write(json.dumps({"args":sys.argv[1:],"stdin":sys.stdin.read() if "restore" in sys.argv else ""})+"\\n")\n')
+        planner=self.run/'router-agent'
+        planner.write_text('#!/bin/sh\nprintf "create CDX_RLY4 hash:ip,port family inet timeout 3600\\nflush CDX_RLY4\\nadd CDX_RLY4 192.0.2.1,tcp:443 timeout 3600\\ncreate CDX_RLY6 hash:ip,port family inet6 timeout 3600\\nflush CDX_RLY6\\n" > "'+str(self.run/'relay-endpoints.ipset')+'"\n');planner.chmod(0o700)
+        r=self._command('relay-refresh',IPSET_LOG=str(log));self.assertEqual(r.returncode,0,r.stderr)
+        records=[json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(records[0]['args'],['restore','-exist'])
+        self.assertIn('flush CDX_RLY4N',records[0]['stdin']);self.assertNotIn('flush CDX_RLY4\n',records[0]['stdin'])
+        self.assertEqual(records[1]['args'],['swap','CDX_RLY4N','CDX_RLY4'])
+        self.assertEqual(records[2]['args'],['swap','CDX_RLY6N','CDX_RLY6'])
 
     def test_successful_enable_publishes_confirmed_state(self):
         result = self._enable()

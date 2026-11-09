@@ -3,6 +3,8 @@ set -u
 DATA=/data/codex-router
 RUN=/tmp/codex-mihomo
 failures=0
+integrity_failures=0
+round=0
 while :; do
     if [ -f "$RUN/enabled" ]; then
         for family in iptables ip6tables; do
@@ -21,6 +23,20 @@ while :; do
             failures=0
         fi
     else failures=0
+    fi
+    round=$((round+1))
+    if [ "$round" -ge 5 ]; then
+        round=0
+        result=0
+        sh "$DATA/health.sh" > "$RUN/interception-health.next" || result=$?
+        mv "$RUN/interception-health.next" "$RUN/interception-health.json"
+        if [ "$result" = 1 ]; then integrity_failures=$((integrity_failures+1));
+        elif [ "$result" = 0 ]; then integrity_failures=0; fi
+        if [ "$integrity_failures" -ge 2 ]; then
+            printf '%s INTERCEPTION_INCOMPLETE_FALLBACK\n' "$(date +%s)" >> "$RUN/watchdog.log"
+            sh "$DATA/routerctl.sh" disable
+            integrity_failures=0
+        fi
     fi
     for name in core agent; do
         file="$RUN/$name.log"

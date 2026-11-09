@@ -13,6 +13,46 @@ class EvidenceTests(unittest.TestCase):
     def row(self,**kw):
         return dict(event='request',worker=0,status=200,bytes=100,seconds=.1,ok=True,reused=True,**kw)
 
+    def stop(self,**updates):
+        row=dict(event='worker-stop',worker=1,status=0,bytes=0,seconds=60,
+                 ok=False,reused=True,ttfbMs=0,stopReason='duration')
+        row.update(updates)
+        return row
+
+    def test_duration_worker_stop_is_not_a_response_sample_or_transfer(self):
+        result=analyze_http([self.row(),self.stop()],minimum_samples=2)
+        self.assertEqual(result['verdict'],'inconclusive')
+        self.assertEqual(result['responseSamples'],1)
+        self.assertEqual(result['completed'],1)
+        self.assertEqual(result['plannedStops'],0)
+        self.assertEqual(result['longestMeasuredRequestSeconds'],.1)
+        self.assertEqual(result['transferredBytes'],100)
+        self.assertAlmostEqual(result['transferredMbps'],.008)
+        self.assertEqual(analyze_http([self.row(),self.stop()],minimum_seconds=59)['verdict'],'inconclusive')
+        self.assertEqual(analyze_http([self.stop()])['verdict'],'inconclusive')
+
+    def test_valid_worker_stops_complete_worker_coverage(self):
+        for stop in [self.stop(),self.stop(status=200,stopReason='budget'),
+                     self.stop(status=200,stopReason='budget',ttfbMs=1,sha256='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')]:
+            rows=[dict(event='run-start',schema=1,workers=2),self.row(),stop,
+                  dict(event='run-end',completed=True,exitCode=0)]
+            self.assertEqual(evaluate_run(rows)['verdict'],'pass')
+
+    def test_worker_stop_cannot_hide_failure_or_response_evidence(self):
+        for updates in [dict(status=500),dict(status=200),dict(bytes=1),dict(ok=True),
+                        dict(error='context deadline exceeded'),dict(error='unexpected EOF'),
+                        dict(stopReason='cancelled'),dict(stopReason='unknown'),dict(stopReason=''),
+                        dict(ttfbMs=1),dict(sha256='abc'),dict(stopReason='budget',status=500),
+                        dict(stopReason='budget',status=200,error='read failed'),
+                        dict(stopReason='budget',status=200,sha256='abc')]:
+            with self.subTest(updates=updates):
+                self.assertEqual(analyze_http([self.row(),self.stop(**updates)])['verdict'],'fail')
+
+    def test_malformed_worker_stop_fields_are_rejected(self):
+        for updates in [dict(error=False),dict(stopReason=1),dict(ttfbMs='invalid'),dict(sha256=False)]:
+            with self.subTest(updates=updates),self.assertRaises(EvidenceError):
+                analyze_http([self.row(),self.stop(**updates)])
+
     def test_no_records_is_inconclusive(self):
         self.assertEqual(analyze_http([])['verdict'],'inconclusive')
 

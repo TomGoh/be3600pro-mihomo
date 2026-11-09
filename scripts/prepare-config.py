@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare private RN01 configuration from an explicitly exported Mihomo profile."""
 import argparse
+import importlib.util
 import copy
 import json
 import os
@@ -82,11 +83,27 @@ config.setdefault("proxy-groups", []).append({
 
 cache_root = (args.rule_cache or args.config.parent).resolve()
 manifest = []
+readiness={"schema":1,"providers":{}}
 with tarfile.open(PRIVATE / "initial-rules.tgz", "w:gz", compresslevel=9) as archive:
     for index, (name, provider) in enumerate(config.get("rule-providers", {}).items()):
         original = (cache_root / provider["path"]).resolve()
         if not original.is_relative_to(cache_root) or not original.is_file():
             raise SystemExit("Rule cache is missing or outside the configured directory")
+        try:
+            import yaml
+            fmt=provider.get("format") or "yaml"
+            if fmt=="yaml":
+                value=yaml.safe_load(original.read_text())
+                if not isinstance(value,dict) or not any(k in value for k in ("payload","rules")):raise ValueError('Missing payload')
+                lists=[value[k] for k in ("payload","rules") if k in value]
+                if any(not isinstance(items,list) or any(not isinstance(item,str) for item in items) for items in lists):raise ValueError('Invalid payload')
+                readiness["providers"][name]=int(any(bool(items) for items in lists))
+            elif fmt=="text":
+                readiness["providers"][name]=int(any(line.strip() and not line.lstrip().startswith(("#","//")) for line in original.read_text().splitlines()))
+            elif fmt=="mrs":readiness["providers"][name]=1
+            else:raise ValueError('Unsupported format')
+        except Exception:
+            raise SystemExit("Cannot inspect rule cache; install requirements.txt and supply an explicit valid payload. No cache content was logged.") from None
         relative = "rule-cache/r%03d.yaml" % index
         archive.add(original, arcname=relative, recursive=False)
         provider["path"] = "/tmp/codex-mihomo/" + relative
@@ -115,7 +132,11 @@ config["dns"] = {
     "direct-nameserver": ["https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"],
     "nameserver-policy": {"+.lan": ["127.0.0.1:53"], "+.local": ["127.0.0.1:53"]},
 }
+spec=importlib.util.spec_from_file_location('router_policy',ROOT/'scripts/router-policy.py')
+router_policy=importlib.util.module_from_spec(spec);spec.loader.exec_module(router_policy)
+config,_policy_report=router_policy.optimize(config,preferred)
 private_write(PRIVATE / "config.json", json.dumps(config, ensure_ascii=False, indent=2) + "\n")
+private_write(PRIVATE / "routing-readiness.json",json.dumps(readiness))
 private_write(PRIVATE / "selections.json", json.dumps(selections, ensure_ascii=False))
 private_write(PRIVATE / "rule-cache-manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
 private_write(PRIVATE / "core-curl.conf", 'silent\nshow-error\nmax-time = 5\nheader = "Authorization: Bearer ' + credentials["controller"] + '"\n')

@@ -1,5 +1,6 @@
 # Generated public release pins.
 BASE_URL='https://api.github.com/repos/MetaCubeX/mihomo/releases/assets/601415741?download=1'
+BASE_FALLBACK_URL='https://github.com/MetaCubeX/mihomo/releases/download/v1.19.32/mihomo-linux-armv7-v1.19.32.gz'
 BASE_ARCHIVE_SHA=f622cbe903ba1a11d30e9071d1c5373929c675b854856ff3e7f977255a25bb66
 BASE_BINARY_SHA=90ae4cb03be602aba9261751ebcf37697f6d2e073d747914b1484fd3f569fbb4
 CORE_BINARY_SHA=d52ec57980db07de447b27015df601539746fc762ba9b94636a67276d6b428bf

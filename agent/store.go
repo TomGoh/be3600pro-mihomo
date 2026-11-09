@@ -25,6 +25,7 @@ type Subscription struct {
 }
 
 type State struct {
+	Imported      *Subscription     `json:"imported,omitempty"`
 	Subscriptions []Subscription    `json:"subscriptions"`
 	Selections    map[string]string `json:"selections"`
 }
@@ -203,10 +204,12 @@ func (s *Store) Commit(ctx context.Context, next map[string]any, state State,
 	if err = atomicWrite(configPath, configData); err != nil {
 		return rollback(err)
 	}
-	if err = reload(ctx); err != nil {
+	// The reload callback must see one candidate generation. The journal
+	// already contains both old files; rollback republishes both before reload.
+	if err = atomicWrite(statePath, stateData); err != nil {
 		return rollback(err)
 	}
-	if err = atomicWrite(statePath, stateData); err != nil {
+	if err = reload(ctx); err != nil {
 		return rollback(err)
 	}
 	if err = os.Remove(journalPath); err != nil {
