@@ -35,6 +35,8 @@ Android App ── 局域网 HTTPS 9443 + 证书指纹/令牌 ── 管理服�
 
 完整命令见 [安装与恢复](docs/quickstart.md)，工具与构建方式见 [开发说明](docs/development.md)，实测范围与限制见 [验证记录](docs/validation.md)。
 
+测试工具、CI 覆盖范围、实机稳定性/压力测试步骤与判定标准见 [测试规范](docs/testing.md)。CI 包含本地网络故障模拟与隔离 Linux UDP 回包验证，不需要家里的路由器或真实订阅。
+
 基本顺序：
 
 1. 保持路由器使用原厂系统，确认固件版本、默认网段和联网校时正常。

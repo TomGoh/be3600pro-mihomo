@@ -36,6 +36,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Android recovery asset tests
         run: python -m unittest discover -s android/tests -p '*_test.py' -v
+      - name: Portable evidence, PCAP and lease guard regressions
+        run: python -m unittest discover -s tests/stability -p 'test_*.py' -v
 
   go:
     name: Go race, vet and ARMv7 build
@@ -50,10 +52,10 @@ jobs:
           go-version-file: agent/go.mod
           cache-dependency-path: agent/go.sum
       - name: Check Go formatting
-        run: test -z "$(gofmt -l agent tests/udp-peer tests/tcp-transition)"
+        run: test -z "$(gofmt -l agent tests/udp-peer tests/tcp-transition tests/netprobe)"
       - name: Race tests and vet for all Go modules
         run: |
-          for module in agent tests/udp-peer tests/tcp-transition; do
+          for module in agent tests/udp-peer tests/tcp-transition tests/netprobe; do
             go -C "$module" test -race -count=1 ./...
             go -C "$module" vet ./...
           done
@@ -64,10 +66,15 @@ jobs:
       - name: Cross-compile Linux ARMv7 diagnostic peers
         run: |
           mkdir -p build/peers
-          for peer in udp-peer tcp-transition; do
+          for peer in udp-peer tcp-transition netprobe; do
             CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 \
               go -C "tests/$peer" build -trimpath -o "$PWD/build/peers/$peer" .
           done
+      - name: Loopback network CLI and offline analyzer integration
+        run: |
+          go -C tests/netprobe build -o "$PWD/build/netprobe-native" .
+          NETPROBE_BINARY="$PWD/build/netprobe-native" \
+            python3 -m unittest discover -s tests/stability -p 'test_cli.py' -v
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: router-agent-armv7
@@ -75,6 +82,61 @@ jobs:
             build/agent/router-agent
             build/agent/router-agent.gz
           if-no-files-found: error
+          retention-days: 14
+
+  udp-linux:
+    name: Patched Mihomo UDP delivery in isolated Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: MetaCubeX/mihomo
+          ref: 88dcbf7f1614a67c3b36b848ee3592dfa92ada36
+          path: work/mihomo-ci
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: tests/udp-peer/go.mod
+          cache: false
+      - name: Build independent Linux UDP peer
+        run: |
+          mkdir -p build/udp-rootfix
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go -C tests/udp-peer build -trimpath -o "$PWD/build/udp-rootfix/udp-peer-linux-amd64" .
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: work/mihomo-ci/go.sum
+      - name: Apply pinned source patch
+        run: git -C work/mihomo-ci apply ../../patches/mihomo-v1.19.32-udp-reply-candidate.patch
+      - name: Test and compile patched UDP packages
+        env:
+          GOTOOLCHAIN: local
+          GOMAXPROCS: '2'
+          GOFLAGS: -p=2
+        run: |
+          go -C work/mihomo-ci test -race -count=1 -timeout 60s ./common/udpreply ./listener/tproxy
+          go -C work/mihomo-ci vet ./common/udpreply ./listener/tproxy
+          for suite in udpreply tproxy; do
+            package=./common/udpreply
+            if [ "$suite" = tproxy ]; then package=./listener/tproxy; fi
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C work/mihomo-ci test -c \
+              -tags udp_integration -o "$PWD/build/udp-rootfix/$suite-linux-amd64.test" "$package"
+          done
+      - name: Deliver IPv4 and IPv6 replies across internal container peers
+        env:
+          UDP_TEST_DOCKER_CONTEXT: default
+        run: sh scripts/test-udp-isolated-linux.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: isolated-linux-udp-evidence
+          path: logs/udp-rootfix/
+          if-no-files-found: ignore
           retention-days: 14
 
   android:

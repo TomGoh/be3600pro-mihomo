@@ -40,6 +40,14 @@ class RouterMetricsTest(unittest.TestCase):
         self.assertEqual(b['mihomoRSSKiB'], 47000)
         self.assertEqual(self.m.delta(a, b)['tcp']['RetransSegs'], 3)
 
+    def test_udp_buffer_errors_are_deltas_not_lifetime_errors(self):
+        a=self.m.parse_snapshot('Udp: InDatagrams RcvbufErrors SndbufErrors InCsumErrors\nUdp: 100 2103 0 0\nConntrack: 20\n')
+        b=self.m.parse_snapshot('Udp: InDatagrams RcvbufErrors SndbufErrors InCsumErrors\nUdp: 130 2105 1 0\nConntrack: 24\n')
+        self.assertEqual(b['conntrack'],24)
+        self.assertEqual(self.m.delta(a,b)['udp']['RcvbufErrors'],2)
+        self.assertEqual(self.m.delta(a,b)['udp']['SndbufErrors'],1)
+        self.assertTrue(self.m.delta(b,a)['counterReset'])
+
 
 if __name__ == '__main__':
     unittest.main()

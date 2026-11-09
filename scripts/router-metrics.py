@@ -9,12 +9,14 @@ import subprocess
 import time
 
 COMMAND = ('cat /proc/stat /proc/meminfo /proc/net/dev /proc/net/softnet_stat /proc/net/snmp; '
-           'for p in $(pidof mihomo); do awk \'$1=="VmRSS:" {print "MihomoRSSKiB: "$2}\' /proc/$p/status; done')
+           'for p in $(pidof mihomo); do awk \'$1=="VmRSS:" {print "MihomoRSSKiB: "$2}\' /proc/$p/status; done; '
+           'if [ -r /proc/sys/net/netfilter/nf_conntrack_count ]; then printf "Conntrack: "; cat /proc/sys/net/netfilter/nf_conntrack_count; fi')
 
 
 def parse_snapshot(text):
-    result = {'cpu': {}, 'interfaces': {}, 'softnet': [], 'tcp': {}, 'mihomoRSSKiB': 0}
+    result = {'cpu': {}, 'interfaces': {}, 'softnet': [], 'tcp': {}, 'udp': {}, 'mihomoRSSKiB': 0}
     tcp_header = None
+    udp_header = None
     for line in text.splitlines():
         fields = line.split()
         if re.match(r'^cpu(?:\d+)? ', line):
@@ -23,6 +25,12 @@ def parse_snapshot(text):
             result['memoryAvailableKiB'] = int(fields[1])
         elif line.startswith('MihomoRSSKiB:'):
             result['mihomoRSSKiB'] += int(fields[1])
+        elif line.startswith('Conntrack:'):
+            result['conntrack'] = int(fields[1])
+        elif line.startswith('Udp:'):
+            if len(fields)>1 and fields[1].isdigit():
+                if udp_header:result['udp']=dict(zip(udp_header,map(int,fields[1:])))
+            else:udp_header=fields[1:]
         elif line.startswith('Tcp:'):
             if len(fields) > 1 and fields[1].isdigit():
                 if tcp_header:
@@ -44,7 +52,12 @@ def parse_snapshot(text):
 
 
 def delta(before, after):
-    result = {'cpu': {}, 'interfaces': {}, 'softnet': [], 'tcp': {}, 'counterReset': False}
+    result = {'cpu': {}, 'interfaces': {}, 'softnet': [], 'tcp': {}, 'udp': {}, 'counterReset': False}
+    for key,new in after.get('udp',{}).items():
+        if key in before.get('udp',{}):
+            change=new-before['udp'][key]
+            if change>=0:result['udp'][key]=change
+            else:result['counterReset']=True
     for key in ('OutSegs', 'RetransSegs', 'InErrs', 'OutRsts'):
         if key in before['tcp'] and key in after['tcp']:
             change = after['tcp'][key]-before['tcp'][key]
@@ -106,6 +119,7 @@ def main():
             sample = parse_snapshot(raw.stdout)
             row = {'unixTime': time.time(), 'elapsedSeconds': round(stamp-start, 3),
                    'memoryAvailableKiB': sample.get('memoryAvailableKiB'),
+                   'conntrack': sample.get('conntrack'),
                    'mihomoRSSKiB': sample['mihomoRSSKiB']}
             if previous is not None:
                 row.update(delta(previous, sample))
