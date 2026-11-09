@@ -62,7 +62,7 @@ def analyze_http(rows,minimum_samples=1,minimum_seconds=0,minimum_bytes=0):
     warm=[r['seconds']*1000 for r in requests if r['reused']]
     duration=max((r['seconds'] for r in measured),default=0)
     # Per-request elapsed time is not aggregate link throughput under concurrency.
-    active=sum(r['seconds'] for r in measured)
+    active=sum(r['seconds'] for r in measured+failed)
     total=sum(r['bytes'] for r in measured+failed)
     incomplete=len(measured)<minimum_samples or duration<minimum_seconds or sum(r['bytes'] for r in measured)<minimum_bytes
     return {'verdict':verdict(bool(failed),incomplete),'completed':len(requests),'plannedStops':len(planned),'failed':len(failed),

@@ -1,6 +1,8 @@
 import http.server
 import json
 import os
+import socket
+import struct
 from pathlib import Path
 import subprocess
 import sys
@@ -43,6 +45,32 @@ class CLIIntegration(unittest.TestCase):
     def test_local_http_failure_is_nonzero_in_probe_and_report(self):
         probe,report,data,_=self.exchange(500)
         self.assertEqual(probe.returncode,1);self.assertEqual(report.returncode,1);self.assertEqual(data['failed'],3)
+
+    def test_udp_cli_identity_matches_offline_capture_analysis(self):
+        from test_pcap import capture
+        peer=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);peer.bind(('127.0.0.1',0));peer.settimeout(.1)
+        address=peer.getsockname();frames=[];stop=threading.Event()
+        def frame(src,dst,data):
+            udp=struct.pack('!HHHH',src[1],dst[1],8+len(data),0)+data
+            ip=struct.pack('!BBHHHBBH',0x45,0,20+len(udp),1,0,64,17,0)+socket.inet_aton(src[0])+socket.inet_aton(dst[0])
+            return bytes(12)+b'\x08\x00'+ip+udp
+        def echo():
+            while not stop.is_set():
+                try:data,source=peer.recvfrom(2048)
+                except socket.timeout:continue
+                frames.extend([frame(source,address,data),frame(address,source,data)]);peer.sendto(data,source)
+        thread=threading.Thread(target=echo);thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                log=Path(td)/'udp.jsonl';pcap=Path(td)/'udp.pcap'
+                with log.open('w') as f:r=subprocess.run([PROBE,'-run-live','-mode','udp','-address','127.0.0.1:'+str(address[1]),'-duration','2s','-packets','3','-interval','1ms'],stdout=f,stderr=subprocess.PIPE,text=True,timeout=4)
+                self.assertEqual(r.returncode,0,r.stderr)
+                stop.set();thread.join(timeout=2)
+                pcap.write_bytes(capture([f[:160] for f in frames],original_sizes=[len(f) for f in frames]))
+                report=subprocess.run([sys.executable,str(ROOT/'scripts/analyze-stability.py'),'pcap','--client-log',str(log),'--capture',str(pcap),'--peer-ip','127.0.0.1','--peer-port',str(address[1]),'--capture-drops','0'],capture_output=True,text=True,timeout=4)
+                self.assertEqual(report.returncode,0,report.stdout+report.stderr)
+                result=json.loads(report.stdout);self.assertEqual(result['received'],3);self.assertTrue(result['attributionVerified'])
+        finally:stop.set();thread.join(timeout=2);peer.close()
 
 
 class AnalyzerCLI(unittest.TestCase):

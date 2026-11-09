@@ -33,7 +33,7 @@ func runCLI(ctx context.Context, args []string, out, stderr io.Writer) int {
 	family := flags.String("family", "", "tcp4/tcp6 or udp4/udp6")
 	allowHTTP := flags.Bool("allow-http", false, "allow plain HTTP to a controlled non-loopback peer")
 	stream := flags.Bool("stream", false, "allow a request to last for the full measurement duration")
-	packets := flags.Int("packets", 100, "UDP packet count per worker; total <= 20000")
+	packets := flags.Int("packets", 20, "UDP packet count per worker; total <= 20000")
 	payload := flags.Int("payload-bytes", 512, "UDP payload size, 34..1400")
 	timeout := flags.Duration("udp-timeout", time.Second, "UDP reply timeout, <=10 seconds")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || !*live || *duration < time.Second || *duration > 30*time.Minute {

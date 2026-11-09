@@ -87,4 +87,11 @@ class EvidenceTests(unittest.TestCase):
         r=self.row();r.update(ok=False,stopReason='duration',seconds=60,error='context deadline exceeded',bytes=1)
         self.assertEqual(analyze_http([r],minimum_seconds=59,minimum_bytes=1000)['verdict'],'inconclusive')
 
+    def test_partial_failed_transfer_time_is_included_in_rate_denominator(self):
+        good=self.row();good['seconds']=1
+        bad=self.row();bad.update(ok=False,error='read failed',seconds=10)
+        result=analyze_http([good,bad])
+        self.assertEqual(result['verdict'],'fail')
+        self.assertAlmostEqual(result['transferredMbps'],1600/11/1e6)
+
 if __name__=='__main__':unittest.main()
