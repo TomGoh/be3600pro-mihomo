@@ -106,12 +106,23 @@ python3 scripts/analyze-stability.py pcap --client-log "$RUN_DIR/udp.jsonl" \
 在路由器上显式运行的例子（文件先由操作者传入并核对）：
 
 ```sh
-sh /tmp/stability-guard.sh --run-live --run-dir /tmp/codex-mihomo \
+TEST_OWNER=$(cat /proc/sys/kernel/random/uuid)
+umask 077
+# noclobber 原子拒绝覆盖活动 owner；不要自动删除已有标记。
+(set -C; printf '%s\n' "$TEST_OWNER" > /tmp/codex-mihomo/stability-token) || exit 1
+cut -d . -f 1 /proc/uptime > /tmp/codex-mihomo/stability-lease.next && \
+  mv /tmp/codex-mihomo/stability-lease.next /tmp/codex-mihomo/stability-lease || exit 1
+(trap '' HUP; exec sh /tmp/stability-guard.sh --run-live --run-dir /tmp/codex-mihomo \
   --token "$TEST_OWNER" --cleanup-script /data/codex-router/routerctl.sh \
-  --lease-seconds 120 --max-seconds 2700 --poll-seconds 10
+  --lease-seconds 120 --max-seconds 2700 --poll-seconds 10) \
+  >> /tmp/codex-mihomo/stability-guard-process.log 2>&1 </dev/null &
+GUARD_PID=$!
+kill -0 "$GUARD_PID" || exit 1
 ```
 
-控制器应在该设备上原子发布心跳：先写同目录临时文件，再 `mv` 替换 `stability-lease`，不要直接截断目标文件。Linux/Python 环境也可使用 `scripts/stability-heartbeat.py --run-live --run-dir DIR --token OWNER`。空值、格式错误、未来或倒退的心跳不能延长已知租约；总时限独立生效。guard 只在 owner 仍匹配时调用 cleanup 的 `disable`，cleanup 失败返回非零并保留证据。控制器还需要单实例约束；owner 检查不是对恶意并发控制器的锁。
+守护忽略 HUP，但仍必须脱离 SSH 会话并重定向全部标准流，不能只在 SSH 前台启动。启动后验证存活与实际过期回退；首次心跳写入或启动失败时不要开始实验，应核实并清理自己创建的标记。
+
+控制器应在该设备上原子发布心跳：先写同目录临时文件，再 `mv` 替换 `stability-lease`，不要直接截断目标文件。Linux/Python 环境也可使用 `scripts/stability-heartbeat.py --run-live --run-dir DIR --token OWNER`。空值、格式错误、未来或倒退的心跳不能延长已知租约；总时限独立生效。guard 只在 owner 仍匹配时调用 cleanup 的 `disable`，cleanup 失败返回非零并保留证据。控制器还需要单实例约束；owner 检查不是对恶意并发控制器的锁。正常结束时先恢复并检查原意状态，再核对 owner 后移除自己的标记，等待 guard 退出；不能用杀掉守护来代替清理。
 
 ## 阶段、判定与记录
 

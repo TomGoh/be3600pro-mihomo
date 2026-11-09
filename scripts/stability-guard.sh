@@ -36,6 +36,7 @@ canonical "$now" || usage
 started=$now
 last=$now
 first=1
+trap '' HUP
 while [ "$(cat "$run/stability-token" 2>/dev/null)" = "$token" ]; do
     now=$(cut -d . -f 1 "$clock")
     canonical "$now" && [ "$now" -ge "$started" ] || usage

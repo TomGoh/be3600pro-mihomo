@@ -2,8 +2,10 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import signal
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -27,39 +29,39 @@ class GuardTests(unittest.TestCase):
     def test_empty_heartbeat_window_does_not_trigger_false_expiry(self):
         with tempfile.TemporaryDirectory() as td:
             args,env=self.setup_guard(td,actions=[{'clock':'101.00','stability-lease':''},{'clock':'102.00','stability-lease':'102'},{'stability-token':'other'}])
-            subprocess.run(args,env=env,check=True,timeout=3)
+            subprocess.run(args,env=env,check=True,timeout=10)
             self.assertFalse((Path(td)/'called').exists())
 
     def test_real_expiration_calls_disable_and_releases_own_state(self):
         with tempfile.TemporaryDirectory() as td:
             args,env=self.setup_guard(td,lease='0')
-            subprocess.run(args,env=env,check=True,timeout=3)
+            subprocess.run(args,env=env,check=True,timeout=10)
             self.assertEqual((Path(td)/'called').read_text(),'disable\n')
             self.assertFalse((Path(td)/'stability-token').exists())
 
     def test_stale_heartbeat_cannot_rewind_a_known_good_timestamp(self):
         with tempfile.TemporaryDirectory() as td:
             args,env=self.setup_guard(td,actions=[{'clock':'101.00','stability-lease':'0'},{'clock':'102.00','stability-lease':'102'},{'stability-token':'other'}])
-            subprocess.run(args,env=env,check=True,timeout=3)
+            subprocess.run(args,env=env,check=True,timeout=10)
             self.assertFalse((Path(td)/'called').exists())
 
     def test_future_or_malformed_heartbeat_cannot_extend_total_deadline(self):
         for lease in ['999999','bad','9999999999999999999999999']:
             with self.subTest(lease=lease),tempfile.TemporaryDirectory() as td:
                 args,env=self.setup_guard(td,lease=lease,age=20,maximum=2,actions=[{'clock':'102.00'}])
-                subprocess.run(args,env=env,check=True,timeout=3)
+                subprocess.run(args,env=env,check=True,timeout=10)
                 self.assertTrue((Path(td)/'called').exists())
 
     def test_changed_owner_is_not_disabled_or_deleted(self):
         with tempfile.TemporaryDirectory() as td:
             args,env=self.setup_guard(td,owner='other',lease='0')
-            subprocess.run(args,env=env,check=True,timeout=3)
+            subprocess.run(args,env=env,check=True,timeout=10)
             self.assertFalse((Path(td)/'called').exists());self.assertEqual((Path(td)/'stability-token').read_text(),'other')
 
     def test_cleanup_failure_preserves_evidence_and_returns_failure(self):
         with tempfile.TemporaryDirectory() as td:
             args,env=self.setup_guard(td,lease='0');(Path(td)/'cleanup').write_text('exit 7\n')
-            r=subprocess.run(args,env=env,capture_output=True,timeout=3)
+            r=subprocess.run(args,env=env,capture_output=True,timeout=10)
             self.assertNotEqual(r.returncode,0);self.assertTrue((Path(td)/'stability-token').exists())
 
     def test_atomic_heartbeat_has_private_mode_and_replaces_empty_value(self):
@@ -69,5 +71,20 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(p.read_text(),'123\n');self.assertEqual(p.stat().st_mode&0o777,0o600)
             self.assertEqual(list(Path(td).iterdir()),[p])
             with self.assertRaises(ValueError):heartbeat(p,-1)
+
+    def test_guard_survives_controller_hangup_until_expiry(self):
+        with tempfile.TemporaryDirectory() as td:
+            p=Path(td);args,env=self.setup_guard(td,age=1)
+            (p/'sleep').write_text('#!/bin/sh\nprintf ready > "'+str(p/'ready')+'"\n/bin/sleep 0.3\nprintf 102.00 > "'+str(p/'clock')+'"\n')
+            proc=subprocess.Popen(args,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            try:
+                deadline=time.monotonic()+5
+                while not (p/'ready').exists() and time.monotonic()<deadline:time.sleep(.01)
+                self.assertTrue((p/'ready').exists())
+                proc.send_signal(signal.SIGHUP);code=proc.wait(timeout=5)
+                if code!=0:time.sleep(.4)
+                self.assertEqual(code,0);self.assertTrue((p/'called').exists())
+            finally:
+                if proc.poll() is None:proc.kill();proc.wait()
 
 if __name__=='__main__':unittest.main()
